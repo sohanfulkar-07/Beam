@@ -100,11 +100,12 @@ class PairingDialog(QDialog):
         layout.addWidget(title)
         layout.addWidget(subtitle)
 
-        # QR Frame
+        # QR Frame with crisp white card & quiet zone
         self.qr_label = QLabel()
         self.qr_label.setObjectName("qr_label")
         self.qr_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.qr_label.setFixedSize(220, 220)
+        self.qr_label.setFixedSize(260, 260)
+        self.qr_label.setStyleSheet("background: #ffffff; border-radius: 12px; padding: 10px;")
         layout.addWidget(self.qr_label, alignment=Qt.AlignmentFlag.AlignCenter)
 
         # Instructions / Fallback
@@ -141,10 +142,22 @@ class PairingDialog(QDialog):
         scroll.setWidget(container)
         main_layout.addWidget(scroll)
 
+        # Register external update listener
+        self.connection_manager.add_device_updated_callback(self._on_external_device_updated)
+
+    def closeEvent(self, event):
+        self.connection_manager.remove_device_updated_callback(self._on_external_device_updated)
+        super().closeEvent(event)
+
+    def _on_external_device_updated(self, device):
+        if device.identity.trust_status.value == "trusted":
+            self.status_label.setText(f"Paired with {device.identity.name}!")
 
     def _generate_qr(self):
         local_id = self.pairing_manager.get_local_identity()
-        addrs = self.connection_manager.discovery_service._get_local_ips()
+        addrs = list(self.connection_manager.discovery_service._get_local_ips())
+        if "127.0.0.1" not in addrs:
+            addrs.append("127.0.0.1")
 
         nonce = base64.b64encode(os.urandom(32)).decode("ascii")
         token = base64.b64encode(os.urandom(24)).decode("ascii")
@@ -170,8 +183,8 @@ class PairingDialog(QDialog):
         qr = qrcode.QRCode(
             version=None,
             error_correction=qrcode.constants.ERROR_CORRECT_M,
-            box_size=6,
-            border=2,
+            box_size=8,
+            border=4,
         )
         qr.add_data(uri)
         qr.make(fit=True)
@@ -183,7 +196,11 @@ class PairingDialog(QDialog):
             img.size[1],
             QImage.Format.Format_RGBA8888,
         )
-        self.qr_label.setPixmap(QPixmap.fromImage(qimg).scaled(240, 240, Qt.AspectRatioMode.KeepAspectRatio))
+        self.qr_label.setPixmap(
+            QPixmap.fromImage(qimg).scaled(
+                240, 240, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
+            )
+        )
 
     def _on_manual_pair_clicked(self):
         text = self.code_input.text().strip()

@@ -1,7 +1,10 @@
 package com.photobeam.app.ui.screens
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
+import android.provider.Settings
 import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -34,21 +37,25 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.BarcodeScanning
+import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
 import com.photobeam.app.ui.theme.*
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Camera QR Scanner using CameraX + ML Kit Barcode Scanning.
- * Automatically requests camera permission, shows live preview with a scanning reticle,
- * and calls onQrScanned when a valid PhotoBeam QR code is detected.
+ * Robust Camera QR Scanner using CameraX + Google ML Kit Barcode Scanning.
+ * Optimized specifically for QR codes (FORMAT_QR_CODE), handles lifecycle,
+ * prevents duplicate frame triggers, and provides user-facing permission states.
  */
 @androidx.annotation.OptIn(androidx.camera.core.ExperimentalGetImage::class)
 @Composable
 fun QrScannerView(
     modifier: Modifier = Modifier,
+    isScanningActive: Boolean = true,
+    promptText: String = "Point camera at the PhotoBeam QR code on your PC",
     onQrScanned: (String) -> Unit,
     onManualInputRequested: (() -> Unit)? = null,
 ) {
@@ -61,15 +68,29 @@ fun QrScannerView(
         )
     }
 
+    var permissionRequestedOnce by remember { mutableStateOf(false) }
+
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { isGranted ->
         hasCameraPermission = isGranted
+        permissionRequestedOnce = true
     }
 
     LaunchedEffect(Unit) {
         if (!hasCameraPermission) {
             permissionLauncher.launch(Manifest.permission.CAMERA)
+        }
+    }
+
+    // Track active scanning to prevent duplicate triggers
+    val isScanningRef = rememberUpdatedState(isScanningActive)
+    val hasTriggered = remember { AtomicBoolean(false) }
+
+    // Reset trigger when scanning is re-enabled (e.g. after retry)
+    LaunchedEffect(isScanningActive) {
+        if (isScanningActive) {
+            hasTriggered.set(false)
         }
     }
 
@@ -80,8 +101,6 @@ fun QrScannerView(
         contentAlignment = Alignment.Center,
     ) {
         if (hasCameraPermission) {
-            val scannedOnce = remember { AtomicBoolean(false) }
-
             AndroidView(
                 factory = { ctx ->
                     val previewView = PreviewView(ctx).apply {
@@ -91,46 +110,59 @@ fun QrScannerView(
                     val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
 
                     cameraProviderFuture.addListener({
-                        val cameraProvider = cameraProviderFuture.get()
-                        val preview = Preview.Builder().build().also {
-                            it.setSurfaceProvider(previewView.surfaceProvider)
-                        }
+                        try {
+                            val cameraProvider = cameraProviderFuture.get()
+                            val preview = Preview.Builder().build().also {
+                                it.setSurfaceProvider(previewView.surfaceProvider)
+                            }
 
-                        val barcodeScanner = BarcodeScanning.getClient()
+                            val options = BarcodeScannerOptions.Builder()
+                                .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
+                                .build()
+                            val barcodeScanner = BarcodeScanning.getClient(options)
 
-                        val imageAnalysis = ImageAnalysis.Builder()
-                            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                            .build()
+                            val imageAnalysis = ImageAnalysis.Builder()
+                                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                                .setTargetResolution(android.util.Size(1280, 720))
+                                .build()
 
-                        imageAnalysis.setAnalyzer(cameraExecutor) { imageProxy ->
-                            val mediaImage = imageProxy.image
-                            if (mediaImage != null && !scannedOnce.get()) {
-                                val inputImage = InputImage.fromMediaImage(
-                                    mediaImage,
-                                    imageProxy.imageInfo.rotationDegrees
-                                )
-                                barcodeScanner.process(inputImage)
-                                    .addOnSuccessListener { barcodes ->
-                                        for (barcode in barcodes) {
-                                            val trimmed = (barcode.rawValue ?: "").trim()
-                                            if ((trimmed.startsWith("photobeam://connect/") || trimmed.startsWith("photobeam://pair/")) &&
-                                                scannedOnce.compareAndSet(false, true)
-                                            ) {
-                                                Log.d("PhotoBeam", "[PERF] Camera scanned QR: $trimmed")
-                                                onQrScanned(trimmed)
-                                                break
+                            imageAnalysis.setAnalyzer(cameraExecutor) { imageProxy ->
+                                try {
+                                    val mediaImage = imageProxy.image
+                                    if (mediaImage != null && isScanningRef.value && !hasTriggered.get()) {
+                                        val inputImage = InputImage.fromMediaImage(
+                                            mediaImage,
+                                            imageProxy.imageInfo.rotationDegrees
+                                        )
+                                        barcodeScanner.process(inputImage)
+                                            .addOnSuccessListener { barcodes ->
+                                                for (barcode in barcodes) {
+                                                    val trimmed = (barcode.rawValue ?: "").trim()
+                                                    if (trimmed.isNotEmpty() &&
+                                                        isScanningRef.value &&
+                                                        hasTriggered.compareAndSet(false, true)
+                                                    ) {
+                                                        Log.d("PhotoBeam", "[PERF] Camera scanned QR: $trimmed")
+                                                        onQrScanned(trimmed)
+                                                        break
+                                                    }
+                                                }
                                             }
-                                        }
-                                    }
-                                    .addOnCompleteListener {
+                                            .addOnFailureListener { e ->
+                                                Log.w("PhotoBeam", "Barcode scan failure", e)
+                                            }
+                                            .addOnCompleteListener {
+                                                imageProxy.close()
+                                            }
+                                    } else {
                                         imageProxy.close()
                                     }
-                            } else {
-                                imageProxy.close()
+                                } catch (e: Exception) {
+                                    Log.e("PhotoBeam", "Frame processing exception", e)
+                                    imageProxy.close()
+                                }
                             }
-                        }
 
-                        try {
                             cameraProvider.unbindAll()
                             cameraProvider.bindToLifecycle(
                                 lifecycleOwner,
@@ -139,7 +171,7 @@ fun QrScannerView(
                                 imageAnalysis
                             )
                         } catch (e: Exception) {
-                            Log.e("PhotoBeam", "Camera binding failed", e)
+                            Log.e("PhotoBeam", "Camera initialization failed", e)
                         }
                     }, ContextCompat.getMainExecutor(ctx))
 
@@ -148,13 +180,13 @@ fun QrScannerView(
                 modifier = Modifier.fillMaxSize(),
             )
 
-            // Scanning Overlay
+            // Viewfinder & Reticle Overlay
             ScannerOverlay(
                 modifier = Modifier.fillMaxSize(),
-                promptText = "Point camera at the PhotoBeam QR code on your PC",
+                promptText = promptText,
             )
         } else {
-            // Permission Denied / Pending View
+            // Permission Denied View with Direct Settings Button
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -164,14 +196,14 @@ fun QrScannerView(
             ) {
                 Text("📷", fontSize = 48.sp)
                 Text(
-                    "Camera Permission Needed",
+                    "Camera Permission Required",
                     fontSize = 20.sp,
                     fontWeight = FontWeight.Bold,
                     color = Color.White,
                     textAlign = TextAlign.Center,
                 )
                 Text(
-                    "PhotoBeam uses your camera to quickly scan the receiver QR code.",
+                    "PhotoBeam uses your camera to scan the QR code displayed on your PC for instant local connection.",
                     fontSize = 14.sp,
                     color = Color.LightGray,
                     textAlign = TextAlign.Center,
@@ -182,6 +214,21 @@ fun QrScannerView(
                     shape = RoundedCornerShape(12.dp),
                 ) {
                     Text("Grant Camera Permission", color = OnBackground)
+                }
+
+                if (permissionRequestedOnce) {
+                    OutlinedButton(
+                        onClick = {
+                            val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                                data = Uri.fromParts("package", context.packageName, null)
+                            }
+                            context.startActivity(intent)
+                        },
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                    ) {
+                        Text("Open App Settings")
+                    }
                 }
 
                 if (onManualInputRequested != null) {
@@ -217,7 +264,7 @@ private fun ScannerOverlay(
                 blendMode = BlendMode.Clear,
             )
 
-            // Highlight border
+            // Glowing border
             drawRoundRect(
                 color = Color(0xFF6C5CE7),
                 topLeft = Offset(left, top),

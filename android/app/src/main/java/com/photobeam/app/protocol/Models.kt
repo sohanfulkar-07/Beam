@@ -104,6 +104,20 @@ fun encodeQrPayload(payload: QRPayload): String {
 }
 
 fun decodeQrPayload(uri: String): QRPayload {
+    if (uri.startsWith(PAIR_URI_SCHEME)) {
+        val p = decodePairingPayload(uri)
+        return QRPayload(
+            v = p.v,
+            sid = p.sid,
+            rid = p.rid,
+            addrs = p.addrs,
+            port = p.port,
+            transports = p.transports,
+            token = p.token,
+            exp = p.exp,
+            certFp = p.certFp,
+        )
+    }
     require(uri.startsWith(URI_SCHEME)) { "Not a PhotoBeam URI: $uri" }
     val b64 = uri.removePrefix(URI_SCHEME)
     val json = String(java.util.Base64.getUrlDecoder().decode(b64), Charsets.UTF_8)

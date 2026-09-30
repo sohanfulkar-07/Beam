@@ -110,7 +110,12 @@ fun SendScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    var state by remember { mutableStateOf<SendState>(SendState.Scanning) }
+    var state by remember {
+        mutableStateOf<SendState>(
+            if (!initialQrUri.isNullOrBlank()) SendState.Connecting("Connecting to receiver...")
+            else SendState.Scanning
+        )
+    }
     var selectedUris by remember { mutableStateOf(initialUris) }
     var manualQrInput by remember { mutableStateOf(initialQrUri ?: "") }
     var showManualDialog by remember { mutableStateOf(false) }
@@ -1226,8 +1231,13 @@ private suspend fun runTransfer(
                             return
                         }
 
-                        val n = stream.read(buf)
-                        if (n < 0) {
+                        var n = 0
+                        while (n < buf.size) {
+                            val r = stream.read(buf, n, buf.size - n)
+                            if (r < 0) break
+                            n += r
+                        }
+                        if (n == 0) {
                             fileDone = true
                             break
                         }
@@ -1684,7 +1694,12 @@ private fun getFileNameAndSize(context: android.content.Context, uri: Uri): Pair
             }
             val f = java.io.File(resolvedPath)
             if (f.exists()) {
-                return Pair(f.name, f.length())
+                val len = f.length()
+                if (len > 0) return Pair(f.name, len)
+                val fallback = java.io.File(context.getExternalFilesDir(null), f.name)
+                if (fallback.exists()) {
+                    return Pair(fallback.name, fallback.length())
+                }
             }
         } catch (_: Exception) {}
     }
@@ -1721,7 +1736,14 @@ private fun openStream(context: android.content.Context, uri: Uri): java.io.Inpu
         }
         val f = java.io.File(resolvedPath)
         if (f.exists()) {
-            return java.io.FileInputStream(f)
+            try {
+                return java.io.FileInputStream(f)
+            } catch (e: Exception) {
+                val fallback = java.io.File(context.getExternalFilesDir(null), f.name)
+                if (fallback.exists()) {
+                    return java.io.FileInputStream(fallback)
+                }
+            }
         }
     }
     return context.contentResolver.openInputStream(uri)

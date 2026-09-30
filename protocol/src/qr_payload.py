@@ -26,8 +26,24 @@ def encode_qr_payload(payload: QRPayload) -> str:
 def decode_qr_payload(uri: str) -> QRPayload:
     """
     Decode photobeam:// URI to QRPayload.
+    Supports both photobeam://connect/ and photobeam://pair/ URIs.
     Raises ValueError on invalid input.
     """
+    if uri.startswith("photobeam://pair/"):
+        from .models import decode_pairing_payload
+        pp = decode_pairing_payload(uri)
+        return QRPayload(
+            v=pp.v,
+            sid=pp.sid,
+            rid=pp.rid,
+            addrs=pp.addrs,
+            port=pp.port,
+            transports=pp.transports,
+            token=pp.token,
+            exp=pp.exp,
+            cert_fp=pp.cert_fp,
+        )
+
     if not uri.startswith(URI_SCHEME):
         raise ValueError(f"Not a PhotoBeam URI: {uri!r}")
     b64 = uri[len(URI_SCHEME):]
@@ -66,7 +82,7 @@ def generate_qr_image(uri: str, box_size: int = 10, border: int = 4):
 
     qr = qrcode.QRCode(
         version=None,
-        error_correction=qrcode.constants.ERROR_CORRECT_L,
+        error_correction=qrcode.constants.ERROR_CORRECT_M,
         box_size=box_size,
         border=border,
     )

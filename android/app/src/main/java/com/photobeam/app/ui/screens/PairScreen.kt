@@ -1,6 +1,8 @@
 package com.photobeam.app.ui.screens
 
 import android.graphics.Bitmap
+import android.os.Handler
+import android.os.Looper
 import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -27,7 +29,15 @@ import com.photobeam.app.protocol.PairingPayload
 import com.photobeam.app.protocol.decodePairingPayload
 import com.photobeam.app.protocol.encodePairingPayload
 import com.photobeam.app.ui.theme.*
+import kotlinx.coroutines.delay
 import java.util.UUID
+
+sealed class PairUiState {
+    object Ready : PairUiState()
+    data class Connecting(val message: String) : PairUiState()
+    data class Success(val deviceName: String) : PairUiState()
+    data class Error(val message: String) : PairUiState()
+}
 
 @Composable
 fun PairScreen(
@@ -40,56 +50,59 @@ fun PairScreen(
     val pairingManager = remember { PairingManager.getInstance(context) }
 
     var selectedTab by remember { mutableStateOf(0) } // 0 = Scan, 1 = Show My QR
-    var pairingStatus by remember { mutableStateOf<String?>(null) }
-    var isProcessing by remember { mutableStateOf(false) }
+    var uiState by remember { mutableStateOf<PairUiState>(PairUiState.Ready) }
+
+    val mainHandler = remember { Handler(Looper.getMainLooper()) }
 
     val handleQrUri: (String) -> Unit = remember {
         { rawUri ->
-            if (!isProcessing && (rawUri.startsWith("photobeam://pair/") || rawUri.startsWith("photobeam://connect/"))) {
-                isProcessing = true
-                pairingStatus = "Verifying pairing QR..."
-                try {
-                    val payload = if (rawUri.startsWith("photobeam://pair/")) {
-                        decodePairingPayload(rawUri)
-                    } else {
-                        val qr = com.photobeam.app.protocol.decodeQrPayload(rawUri)
-                        PairingPayload(
-                            v = qr.v,
-                            sid = qr.sid,
-                            rid = qr.rid,
-                            addrs = qr.addrs,
-                            port = qr.port,
-                            transports = qr.transports,
-                            token = qr.token,
-                            exp = qr.exp,
-                            certFp = qr.certFp,
-                            deviceName = "Windows PC",
-                            devicePublicKey = "",
-                            capabilities = listOf("file_transfer", "screen_mirror_receive"),
-                            pairingNonce = "",
-                        )
-                    }
-                    val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
-                    connectionManager.pairWithPayload(
-                        payload = payload,
-                        onSuccess = { dev ->
-                            mainHandler.post {
-                                pairingStatus = "Paired with ${dev.identity.name}!"
-                                Toast.makeText(context, "Successfully paired with ${dev.identity.name}!", Toast.LENGTH_SHORT).show()
-                                onPairingComplete()
-                            }
-                        },
-                        onError = { err ->
-                            mainHandler.post {
-                                pairingStatus = "Pairing failed: $err"
-                                isProcessing = false
-                            }
+            if (uiState is PairUiState.Ready) {
+                if (!rawUri.startsWith("photobeam://pair/") && !rawUri.startsWith("photobeam://connect/")) {
+                    uiState = PairUiState.Error("Invalid QR code: Unrecognized format. Please scan a PhotoBeam pairing code.")
+                } else {
+                    uiState = PairUiState.Connecting("QR Detected! Verifying with PC...")
+                    try {
+                        val payload = if (rawUri.startsWith("photobeam://pair/")) {
+                            decodePairingPayload(rawUri)
+                        } else {
+                            val qr = com.photobeam.app.protocol.decodeQrPayload(rawUri)
+                            PairingPayload(
+                                v = qr.v,
+                                sid = qr.sid,
+                                rid = qr.rid,
+                                addrs = qr.addrs,
+                                port = qr.port,
+                                transports = qr.transports,
+                                token = qr.token,
+                                exp = qr.exp,
+                                certFp = qr.certFp,
+                                deviceName = "Windows PC",
+                                devicePublicKey = "",
+                                capabilities = listOf("file_transfer", "screen_mirror_receive"),
+                                pairingNonce = "",
+                            )
                         }
-                    )
-                } catch (e: Exception) {
-                    android.os.Handler(android.os.Looper.getMainLooper()).post {
-                        pairingStatus = "Invalid QR code: ${e.message}"
-                        isProcessing = false
+
+                        if (payload.isExpired()) {
+                            uiState = PairUiState.Error("QR code has expired. Please refresh the QR code on your PC.")
+                        } else {
+                            connectionManager.pairWithPayload(
+                                payload = payload,
+                                onSuccess = { dev ->
+                                    mainHandler.post {
+                                        uiState = PairUiState.Success(dev.identity.name)
+                                        Toast.makeText(context, "Successfully paired with ${dev.identity.name}!", Toast.LENGTH_SHORT).show()
+                                    }
+                                },
+                                onError = { err ->
+                                    mainHandler.post {
+                                        uiState = PairUiState.Error(err)
+                                    }
+                                }
+                            )
+                        }
+                    } catch (e: Exception) {
+                        uiState = PairUiState.Error("Invalid QR code: ${e.message ?: "Malformed payload"}")
                     }
                 }
             }
@@ -97,7 +110,17 @@ fun PairScreen(
     }
 
     LaunchedEffect(initialQrUri) {
-        initialQrUri?.let { handleQrUri(it) }
+        if (!initialQrUri.isNullOrBlank()) {
+            handleQrUri(initialQrUri)
+        }
+    }
+
+    // Auto complete after showing success state
+    LaunchedEffect(uiState) {
+        if (uiState is PairUiState.Success) {
+            delay(1200L)
+            onPairingComplete()
+        }
     }
 
     Column(
@@ -131,8 +154,8 @@ fun PairScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 24.dp, vertical = 8.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .background(Surface),
+                .clip(RoundedCornerShape(12.dp))
+                .background(Surface),
         ) {
             Button(
                 onClick = { selectedTab = 0 },
@@ -169,25 +192,99 @@ fun PairScreen(
                     .padding(horizontal = 24.dp)
                     .clip(RoundedCornerShape(20.dp))
             ) {
+                val isScanning = uiState is PairUiState.Ready
+
                 QrScannerView(
                     modifier = Modifier.fillMaxSize(),
+                    isScanningActive = isScanning,
+                    promptText = when (uiState) {
+                        is PairUiState.Ready -> "Point camera at the PhotoBeam QR code on your PC"
+                        is PairUiState.Connecting -> "QR detected! Verifying challenge..."
+                        is PairUiState.Success -> "Pairing complete!"
+                        is PairUiState.Error -> "Pairing failed"
+                    },
                     onQrScanned = handleQrUri
                 )
 
-                pairingStatus?.let { status ->
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.TopCenter)
-                            .padding(top = 16.dp)
-                            .background(Color.Black.copy(alpha = 0.85f), RoundedCornerShape(12.dp))
-                            .padding(horizontal = 20.dp, vertical = 10.dp)
-                    ) {
-                        Text(status, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                // State Feedback Overlay
+                when (val s = uiState) {
+                    is PairUiState.Connecting -> {
+                        Surface(
+                            modifier = Modifier
+                                .align(Alignment.Center)
+                                .padding(24.dp),
+                            shape = RoundedCornerShape(20.dp),
+                            color = Color(0xFF1E293B).copy(alpha = 0.95f),
+                            shadowElevation = 8.dp,
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(24.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(14.dp),
+                            ) {
+                                CircularProgressIndicator(color = Primary, modifier = Modifier.size(44.dp))
+                                Text("Connecting to PC...", fontWeight = FontWeight.Bold, color = Color.White, fontSize = 16.sp)
+                                Text(s.message, color = Color.LightGray, fontSize = 13.sp, textAlign = TextAlign.Center)
+                            }
+                        }
+                    }
+
+                    is PairUiState.Success -> {
+                        Surface(
+                            modifier = Modifier
+                                .align(Alignment.Center)
+                                .padding(24.dp),
+                            shape = RoundedCornerShape(20.dp),
+                            color = Color(0xFF0F291E).copy(alpha = 0.95f),
+                            shadowElevation = 8.dp,
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(24.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                Text("✅", fontSize = 40.sp)
+                                Text("Pairing Successful!", fontWeight = FontWeight.Bold, color = Color(0xFF2ED573), fontSize = 18.sp)
+                                Text("Connected to ${s.deviceName}", color = Color.White, fontSize = 14.sp)
+                            }
+                        }
+                    }
+
+                    is PairUiState.Error -> {
+                        Surface(
+                            modifier = Modifier
+                                .align(Alignment.Center)
+                                .padding(24.dp),
+                            shape = RoundedCornerShape(20.dp),
+                            color = Color(0xFF2B161B).copy(alpha = 0.96f),
+                            shadowElevation = 8.dp,
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(24.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(14.dp),
+                            ) {
+                                Text("⚠️", fontSize = 36.sp)
+                                Text("Pairing Failed", fontWeight = FontWeight.Bold, color = Color(0xFFFF4757), fontSize = 17.sp)
+                                Text(s.message, color = Color.LightGray, fontSize = 13.sp, textAlign = TextAlign.Center)
+                                Spacer(Modifier.height(4.dp))
+                                Button(
+                                    onClick = { uiState = PairUiState.Ready },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Primary),
+                                    shape = RoundedCornerShape(12.dp),
+                                ) {
+                                    Text("🔄 Scan Again / Retry", color = OnBackground, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    }
+
+                    is PairUiState.Ready -> {
+                        // Overlay handled by QrScannerView promptText
                     }
                 }
             }
         } else {
-
             // Show Local Device QR Code
             val localIdentity = remember { pairingManager.getLocalIdentity() }
             val qrBitmap = remember {
@@ -199,8 +296,8 @@ fun PairScreen(
                     addrs = listOf("127.0.0.1"),
                     port = 47474,
                     transports = listOf("wifi", "usb"),
-                    token = UUID.randomUUID().toString().replace("-", ""),
-                    exp = System.currentTimeMillis() / 1000 + 1800,
+                    token = UUID.randomUUID().toString(),
+                    exp = (System.currentTimeMillis() / 1000) + 1800,
                     certFp = "",
                     deviceName = localIdentity.name,
                     devicePublicKey = localIdentity.publicKey,
@@ -208,67 +305,68 @@ fun PairScreen(
                     pairingNonce = nonce,
                 )
                 val uri = encodePairingPayload(payload)
-                generateQrBitmap(uri)
+                generateQrBitmap(uri, 600)
             }
 
-            Box(
+            Column(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
                     .padding(24.dp),
-                contentAlignment = Alignment.Center
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
             ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                Card(
+                    modifier = Modifier.padding(16.dp),
+                    shape = RoundedCornerShape(24.dp),
+                    colors = CardDefaults.cardColors(containerColor = Surface),
                 ) {
-                    Text(
-                        "Scan this QR code from PhotoBeam on Windows",
-                        fontSize = 15.sp,
-                        color = OnSurfaceVariant,
-                        textAlign = TextAlign.Center
-                    )
-
-                    qrBitmap?.let { bmp ->
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(16.dp))
-                                .background(Color.White)
-                                .padding(16.dp)
-                        ) {
+                    Column(
+                        modifier = Modifier.padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        qrBitmap?.let { bmp ->
                             Image(
                                 bitmap = bmp.asImageBitmap(),
-                                contentDescription = "Pairing QR Code",
-                                modifier = Modifier.size(240.dp)
+                                contentDescription = "Local Pairing QR",
+                                modifier = Modifier
+                                    .size(240.dp)
+                                    .clip(RoundedCornerShape(16.dp))
+                                    .background(Color.White)
+                                    .padding(12.dp)
                             )
                         }
+                        Spacer(Modifier.height(16.dp))
+                        Text(
+                            localIdentity.name,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 18.sp,
+                            color = OnBackground,
+                        )
+                        Text(
+                            "Scan with PhotoBeam on another device",
+                            fontSize = 12.sp,
+                            color = OnSurfaceVariant,
+                            textAlign = TextAlign.Center,
+                        )
                     }
-
-                    Text(
-                        "Device: ${localIdentity.name}",
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = OnBackground
-                    )
                 }
             }
         }
-
-        Spacer(Modifier.height(16.dp))
     }
 }
 
-private fun generateQrBitmap(content: String): Bitmap? {
+private fun generateQrBitmap(content: String, size: Int): Bitmap? {
     return try {
-        val size = 512
-        val bits = QRCodeWriter().encode(content, BarcodeFormat.QR_CODE, size, size)
-        val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.RGB_565)
+        val writer = QRCodeWriter()
+        val bitMatrix = writer.encode(content, BarcodeFormat.QR_CODE, size, size)
+        val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.RGB_565)
         for (x in 0 until size) {
             for (y in 0 until size) {
-                bmp.setPixel(x, y, if (bits.get(x, y)) android.graphics.Color.BLACK else android.graphics.Color.WHITE)
+                bitmap.setPixel(x, y, if (bitMatrix.get(x, y)) android.graphics.Color.BLACK else android.graphics.Color.WHITE)
             }
         }
-        bmp
+        bitmap
     } catch (e: Exception) {
         null
     }

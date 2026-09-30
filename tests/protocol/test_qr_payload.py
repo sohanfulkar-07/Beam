@@ -99,3 +99,53 @@ def test_wifi_and_usb_transports():
     p2 = decode_qr_payload(uri)
     assert "wifi" in p2.transports
     assert "usb" in p2.transports
+
+
+def test_decode_pairing_uri_as_qr_payload():
+    from src.models import PairingPayload, encode_pairing_payload
+    pp = PairingPayload(
+        v=PROTOCOL_VERSION,
+        sid="session-pair-123",
+        rid="receiver-id-456",
+        addrs=["192.168.1.50", "127.0.0.1"],
+        port=47474,
+        transports=["wifi", "usb"],
+        token="pair-token-xyz",
+        exp=int(time.time()) + 1800,
+        cert_fp="sha256:fp123",
+        device_name="TestLaptop",
+        device_public_key="pubkey-abc",
+        capabilities=["file_transfer"],
+        pairing_nonce="nonce-123",
+    )
+    uri = encode_pairing_payload(pp)
+    assert uri.startswith("photobeam://pair/")
+    decoded = decode_qr_payload(uri)
+    assert decoded.sid == "session-pair-123"
+    assert decoded.rid == "receiver-id-456"
+    assert decoded.addrs == ["192.168.1.50", "127.0.0.1"]
+    assert decoded.port == 47474
+    assert decoded.token == "pair-token-xyz"
+    assert not decoded.is_expired()
+
+
+def test_decode_pairing_uri_expired():
+    from src.models import PairingPayload, encode_pairing_payload
+    pp = PairingPayload(
+        v=PROTOCOL_VERSION,
+        sid="session-expired",
+        rid="receiver-id-456",
+        addrs=["127.0.0.1"],
+        port=47474,
+        transports=["wifi"],
+        token="token",
+        exp=int(time.time()) - 100,  # Expired
+        cert_fp="",
+        device_name="Laptop",
+        device_public_key="key",
+        capabilities=[],
+        pairing_nonce="nonce",
+    )
+    uri = encode_pairing_payload(pp)
+    decoded = decode_qr_payload(uri)
+    assert decoded.is_expired()
