@@ -50,11 +50,12 @@ except ImportError:
 
 
 try:
-    from .discovery import DiscoveredPeer, DiscoveryService
-    from .pairing_manager import PairingManager
-except (ImportError, ValueError):
     from discovery import DiscoveredPeer, DiscoveryService
     from pairing_manager import PairingManager
+except (ImportError, ValueError):
+    from .discovery import DiscoveredPeer, DiscoveryService
+    from .pairing_manager import PairingManager
+
 
 import importlib.util
 

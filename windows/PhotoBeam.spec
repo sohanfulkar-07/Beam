@@ -14,7 +14,12 @@ datas = [
     (str(PROTO_DIR), "protocol"),
     (str(WIN_DIR / "ui"), "ui"),
     (str(WIN_DIR / "transport"), "transport"),
+    (str(WIN_DIR / "connection_manager.py"), "."),
+    (str(WIN_DIR / "pairing_manager.py"), "."),
+    (str(WIN_DIR / "discovery.py"), "."),
+    (str(WIN_DIR / "history_manager.py"), "."),
 ]
+
 
 hidden_imports = [
     "PyQt6",

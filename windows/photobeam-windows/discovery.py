@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import socket
 import struct
 import sys
@@ -16,6 +17,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
+
 
 if getattr(sys, 'frozen', False):
     _proto = os.path.join(getattr(sys, '_MEIPASS', os.path.dirname(sys.executable)), 'protocol')

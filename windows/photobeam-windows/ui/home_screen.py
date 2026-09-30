@@ -9,10 +9,12 @@ Replaces separate Send/Receive entry points with a unified Connect hub:
 """
 from __future__ import annotations
 
+import os
 import sys
 import time
 from pathlib import Path
 from typing import Optional
+
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
