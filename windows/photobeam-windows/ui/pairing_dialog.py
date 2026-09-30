@@ -23,7 +23,9 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QVBoxLayout,
+    QWidget,
 )
 
 import qrcode
@@ -64,16 +66,26 @@ class PairingDialog(QDialog):
         self.connection_manager = connection_manager
         self.pairing_manager = connection_manager.pairing_manager
         self.setWindowTitle("Pair New Device — PhotoBeam")
-        self.setFixedSize(520, 640)
+        self.setMinimumSize(460, 540)
+        self.resize(500, 620)
         self.setModal(True)
 
         self._build_ui()
         self._generate_qr()
 
     def _build_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(32, 28, 32, 28)
-        layout.setSpacing(16)
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(16, 16, 16, 16)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet("background: transparent;")
+
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(16, 12, 16, 12)
+        layout.setSpacing(14)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         title = QLabel("Pair New Device")
@@ -92,7 +104,7 @@ class PairingDialog(QDialog):
         self.qr_label = QLabel()
         self.qr_label.setObjectName("qr_label")
         self.qr_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.qr_label.setFixedSize(260, 260)
+        self.qr_label.setFixedSize(220, 220)
         layout.addWidget(self.qr_label, alignment=Qt.AlignmentFlag.AlignCenter)
 
         # Instructions / Fallback
@@ -125,6 +137,10 @@ class PairingDialog(QDialog):
         close_btn.setObjectName("secondary")
         close_btn.clicked.connect(self.close)
         layout.addWidget(close_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        scroll.setWidget(container)
+        main_layout.addWidget(scroll)
+
 
     def _generate_qr(self):
         local_id = self.pairing_manager.get_local_identity()

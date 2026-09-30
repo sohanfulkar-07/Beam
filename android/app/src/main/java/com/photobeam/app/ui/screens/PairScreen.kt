@@ -33,6 +33,7 @@ import java.util.UUID
 fun PairScreen(
     onBack: () -> Unit,
     onPairingComplete: () -> Unit,
+    initialQrUri: String? = null,
 ) {
     val context = LocalContext.current
     val connectionManager = remember { ConnectionManager.getInstance(context) }
@@ -41,6 +42,63 @@ fun PairScreen(
     var selectedTab by remember { mutableStateOf(0) } // 0 = Scan, 1 = Show My QR
     var pairingStatus by remember { mutableStateOf<String?>(null) }
     var isProcessing by remember { mutableStateOf(false) }
+
+    val handleQrUri: (String) -> Unit = remember {
+        { rawUri ->
+            if (!isProcessing && (rawUri.startsWith("photobeam://pair/") || rawUri.startsWith("photobeam://connect/"))) {
+                isProcessing = true
+                pairingStatus = "Verifying pairing QR..."
+                try {
+                    val payload = if (rawUri.startsWith("photobeam://pair/")) {
+                        decodePairingPayload(rawUri)
+                    } else {
+                        val qr = com.photobeam.app.protocol.decodeQrPayload(rawUri)
+                        PairingPayload(
+                            v = qr.v,
+                            sid = qr.sid,
+                            rid = qr.rid,
+                            addrs = qr.addrs,
+                            port = qr.port,
+                            transports = qr.transports,
+                            token = qr.token,
+                            exp = qr.exp,
+                            certFp = qr.certFp,
+                            deviceName = "Windows PC",
+                            devicePublicKey = "",
+                            capabilities = listOf("file_transfer", "screen_mirror_receive"),
+                            pairingNonce = "",
+                        )
+                    }
+                    val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+                    connectionManager.pairWithPayload(
+                        payload = payload,
+                        onSuccess = { dev ->
+                            mainHandler.post {
+                                pairingStatus = "Paired with ${dev.identity.name}!"
+                                Toast.makeText(context, "Successfully paired with ${dev.identity.name}!", Toast.LENGTH_SHORT).show()
+                                onPairingComplete()
+                            }
+                        },
+                        onError = { err ->
+                            mainHandler.post {
+                                pairingStatus = "Pairing failed: $err"
+                                isProcessing = false
+                            }
+                        }
+                    )
+                } catch (e: Exception) {
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        pairingStatus = "Invalid QR code: ${e.message}"
+                        isProcessing = false
+                    }
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(initialQrUri) {
+        initialQrUri?.let { handleQrUri(it) }
+    }
 
     Column(
         modifier = Modifier
@@ -73,8 +131,8 @@ fun PairScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 24.dp, vertical = 8.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .background(Surface),
+            .clip(RoundedCornerShape(12.dp))
+            .background(Surface),
         ) {
             Button(
                 onClick = { selectedTab = 0 },
@@ -113,37 +171,14 @@ fun PairScreen(
             ) {
                 QrScannerView(
                     modifier = Modifier.fillMaxSize(),
-                    onQrScanned = { rawUri ->
-                        if (!isProcessing && rawUri.startsWith("photobeam://pair/")) {
-                            isProcessing = true
-                            pairingStatus = "Verifying pairing challenge..."
-                            try {
-                                val payload = decodePairingPayload(rawUri)
-                                connectionManager.pairWithPayload(
-                                    payload = payload,
-                                    onSuccess = { dev ->
-                                        pairingStatus = "Paired with ${dev.identity.name}!"
-                                        Toast.makeText(context, "Successfully paired with ${dev.identity.name}!", Toast.LENGTH_SHORT).show()
-                                        onPairingComplete()
-                                    },
-                                    onError = { err ->
-                                        pairingStatus = "Pairing failed: $err"
-                                        isProcessing = false
-                                    }
-                                )
-                            } catch (e: Exception) {
-                                pairingStatus = "Invalid QR code: ${e.message}"
-                                isProcessing = false
-                            }
-                        }
-                    }
+                    onQrScanned = handleQrUri
                 )
 
                 pairingStatus?.let { status ->
                     Box(
                         modifier = Modifier
-                            .align(Alignment.BottomCenter)
-                            .padding(16.dp)
+                            .align(Alignment.TopCenter)
+                            .padding(top = 16.dp)
                             .background(Color.Black.copy(alpha = 0.85f), RoundedCornerShape(12.dp))
                             .padding(horizontal = 20.dp, vertical = 10.dp)
                     ) {
@@ -152,6 +187,7 @@ fun PairScreen(
                 }
             }
         } else {
+
             // Show Local Device QR Code
             val localIdentity = remember { pairingManager.getLocalIdentity() }
             val qrBitmap = remember {

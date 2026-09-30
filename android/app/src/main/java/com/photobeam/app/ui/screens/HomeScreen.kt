@@ -14,7 +14,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+
 import androidx.compose.ui.unit.sp
 import com.photobeam.app.data.ConnectionManager
 import com.photobeam.app.data.PairingManager
@@ -50,8 +52,8 @@ fun HomeScreen(
             .background(Background)
             .statusBarsPadding()
             .navigationBarsPadding()
-            .padding(horizontal = 20.dp, vertical = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         // ── Top Header ────────────────────────────────────────────────────────
         Row(
@@ -59,33 +61,51 @@ fun HomeScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("⚡", fontSize = 28.sp)
-                Spacer(Modifier.width(8.dp))
+            Row(
+                modifier = Modifier.weight(1f, fill = false),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("⚡", fontSize = 24.sp)
+                Spacer(Modifier.width(6.dp))
                 Column {
-                    Text("PhotoBeam", fontSize = 22.sp, fontWeight = FontWeight.Bold, color = OnBackground)
-                    Text("📱 ${localIdentity.name}", fontSize = 12.sp, color = Secondary)
+                    Text(
+                        "PhotoBeam",
+                        fontSize = 19.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = OnBackground,
+                        maxLines = 1
+                    )
+                    Text(
+                        "📱 ${localIdentity.name}",
+                        fontSize = 11.sp,
+                        color = Secondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
             }
 
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Spacer(Modifier.width(6.dp))
+
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                 Button(
                     onClick = onNavigatePair,
                     colors = ButtonDefaults.buttonColors(containerColor = Primary),
                     shape = RoundedCornerShape(10.dp),
-                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
                 ) {
-                    Text("➕ Pair Device", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    Text("➕ Pair", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                 }
 
                 IconButton(
                     onClick = onNavigateHistory,
-                    modifier = Modifier.clip(RoundedCornerShape(10.dp)).background(Surface)
+                    modifier = Modifier.size(36.dp).clip(RoundedCornerShape(10.dp)).background(Surface)
                 ) {
-                    Text("📜", fontSize = 18.sp)
+                    Text("📜", fontSize = 16.sp)
                 }
             }
         }
+
 
         // ── Trusted Devices Section ───────────────────────────────────────────
         Text(
@@ -163,34 +183,37 @@ fun HomeScreen(
         // ── Ad-hoc Quick Actions ──────────────────────────────────────────────
         Card(
             modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(16.dp),
+            shape = RoundedCornerShape(14.dp),
             colors = CardDefaults.cardColors(containerColor = Surface)
         ) {
-            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("Quick Actions (Ad-Hoc):", fontSize = 13.sp, color = OnSurfaceVariant, fontWeight = FontWeight.Medium)
+            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("Quick Actions (Ad-Hoc):", fontSize = 12.sp, color = OnSurfaceVariant, fontWeight = FontWeight.Medium)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     OutlinedButton(
                         onClick = onNavigateReceive,
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier.weight(1f).height(44.dp),
                         shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = OnBackground)
                     ) {
-                        Text("📥 Receive (QR)", fontSize = 13.sp)
+                        Text("📥 Receive", fontSize = 12.sp, maxLines = 1)
                     }
                     OutlinedButton(
                         onClick = onNavigateSend,
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier.weight(1f).height(44.dp),
                         shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = OnBackground)
                     ) {
-                        Text("📤 Send Files", fontSize = 13.sp)
+                        Text("📤 Send Files", fontSize = 12.sp, maxLines = 1)
                     }
                 }
             }
         }
+
     }
 }
 

@@ -112,12 +112,12 @@ fun QrScannerView(
                                 barcodeScanner.process(inputImage)
                                     .addOnSuccessListener { barcodes ->
                                         for (barcode in barcodes) {
-                                            val value = barcode.rawValue ?: continue
-                                            if (value.startsWith("photobeam://connect/") &&
+                                            val trimmed = (barcode.rawValue ?: "").trim()
+                                            if ((trimmed.startsWith("photobeam://connect/") || trimmed.startsWith("photobeam://pair/")) &&
                                                 scannedOnce.compareAndSet(false, true)
                                             ) {
-                                                Log.d("PhotoBeam", "[PERF] Camera scanned QR: $value")
-                                                onQrScanned(value)
+                                                Log.d("PhotoBeam", "[PERF] Camera scanned QR: $trimmed")
+                                                onQrScanned(trimmed)
                                                 break
                                             }
                                         }

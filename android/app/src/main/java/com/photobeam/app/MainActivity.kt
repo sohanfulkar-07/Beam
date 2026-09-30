@@ -151,26 +151,37 @@ fun PhotoBeamApp(
 ) {
     val navController = rememberNavController()
 
-    LaunchedEffect(initialScreen) {
+    LaunchedEffect(initialScreen, initialQrUri) {
         if (initialScreen != null) {
             navController.navigate(initialScreen) {
                 launchSingleTop = true
             }
-        } else if (initialQrUri != null || initialSharedUris.isNotEmpty()) {
+        } else if (initialQrUri != null) {
+            if (initialQrUri.startsWith("photobeam://pair/")) {
+                navController.navigate("pair") {
+                    launchSingleTop = true
+                }
+            } else {
+                navController.navigate("send") {
+                    launchSingleTop = true
+                }
+            }
+        } else if (initialSharedUris.isNotEmpty()) {
             navController.navigate("send") {
                 launchSingleTop = true
             }
         }
     }
 
-    val startDest = when {
-        initialScreen != null -> initialScreen
-        initialQrUri != null -> "send"
-        initialSharedUris.isNotEmpty() -> "send"
-        else -> "home"
+    fun navigateBackOrHome() {
+        if (!navController.popBackStack()) {
+            navController.navigate("home") {
+                popUpTo(0)
+            }
+        }
     }
 
-    NavHost(navController = navController, startDestination = startDest) {
+    NavHost(navController = navController, startDestination = "home") {
         composable("home") {
             HomeScreen(
                 onNavigateReceive = { navController.navigate("receive") },
@@ -184,20 +195,21 @@ fun PhotoBeamApp(
         }
         composable("pair") {
             PairScreen(
-                onBack = { navController.popBackStack() },
-                onPairingComplete = { navController.popBackStack() }
+                onBack = { navigateBackOrHome() },
+                onPairingComplete = { navigateBackOrHome() },
+                initialQrUri = initialQrUri,
             )
         }
         composable("receive") {
             ReceiveScreen(
-                onBack = { navController.popBackStack() },
+                onBack = { navigateBackOrHome() },
                 onNavigateHistory = { navController.navigate("history") },
                 autoAccept = autoAccept,
             )
         }
         composable("send") {
             SendScreen(
-                onBack = { navController.popBackStack() },
+                onBack = { navigateBackOrHome() },
                 onNavigateHistory = { navController.navigate("history") },
                 initialUris = initialSharedUris,
                 initialQrUri = initialQrUri,
@@ -205,7 +217,7 @@ fun PhotoBeamApp(
         }
         composable("history") {
             HistoryScreen(
-                onBack = { navController.popBackStack() },
+                onBack = { navigateBackOrHome() },
             )
         }
     }
