@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Android
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+*.apk
+*.aab
+*.keystore
+*.jks
+release.properties
+android/app/release.properties
+
+
+# Windows
+windows/photobeam-windows/__pycache__/
+*.pyc
+
+# Docs artifacts
+docs/*.html
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# PhotoBeam runtime
+~/.photobeam/
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# Scratch & test build artifacts
+.kilo/
+dist_build/
+scratch/
+tests/scratch_*/
+*.bin
+

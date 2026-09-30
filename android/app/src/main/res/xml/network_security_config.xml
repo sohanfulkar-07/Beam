@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Allow cleartext on local network (192.168.x.x, 10.x.x.x, 172.16-31.x.x) -->
+<!-- PhotoBeam uses TLS but the self-signed cert causes issues with strict mode -->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">localhost</domain>
+        <domain includeSubdomains="false">192.168.0.0/16</domain>
+        <domain includeSubdomains="false">10.0.0.0/8</domain>
+        <domain includeSubdomains="false">172.16.0.0/12</domain>
+        <trust-anchors>
+            <certificates src="system"/>
+            <!-- User certs allows our ephemeral self-signed cert via TOFU -->
+            <certificates src="user"/>
+        </trust-anchors>
+    </domain-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system"/>
+        </trust-anchors>
+    </base-config>
+</network-security-config>

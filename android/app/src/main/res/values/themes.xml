@@ -1,0 +1,7 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <style name="Theme.PhotoBeam" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">#0f1117</item>
+        <item name="android:statusBarColor">#0f1117</item>
+        <item name="android:navigationBarColor">#0f1117</item>
+    </style>
+</resources>
