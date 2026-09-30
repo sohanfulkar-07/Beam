@@ -5,16 +5,22 @@ Entry point — starts the PyQt6 GUI
 import sys
 import os
 
-# Ensure protocol src is importable
+# Ensure paths are configured
 if getattr(sys, 'frozen', False):
     base_dir = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
     proto_dir = os.path.join(base_dir, 'protocol')
     if proto_dir not in sys.path:
-        sys.path.insert(0, proto_dir)
+        sys.path.append(proto_dir)
     if base_dir not in sys.path:
         sys.path.insert(0, base_dir)
 else:
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'protocol'))
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+    proto_dir = os.path.join(repo_root, 'protocol')
+    win_dir = os.path.dirname(os.path.abspath(__file__))
+    if proto_dir not in sys.path:
+        sys.path.append(proto_dir)
+    if win_dir not in sys.path:
+        sys.path.insert(0, win_dir)
 
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QTimer

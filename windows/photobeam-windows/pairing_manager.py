@@ -25,17 +25,36 @@ from cryptography.hazmat.primitives.asymmetric import ed25519
 from cryptography.hazmat.primitives import serialization
 
 # Import models from protocol
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "protocol" / "src"))
-from models import (
-    PROTOCOL_VERSION,
-    Capability,
-    ConnectionState,
-    DeviceEndpoint,
-    DeviceIdentity,
-    PairedDevice,
-    PresenceState,
-    TrustStatus,
-)
+if getattr(sys, 'frozen', False):
+    _proto = os.path.join(getattr(sys, '_MEIPASS', os.path.dirname(sys.executable)), 'protocol')
+else:
+    _proto = str(Path(__file__).resolve().parent.parent.parent / "protocol")
+if _proto not in sys.path:
+    sys.path.append(_proto)
+
+try:
+    from src.models import (
+        PROTOCOL_VERSION,
+        Capability,
+        ConnectionState,
+        DeviceEndpoint,
+        DeviceIdentity,
+        PairedDevice,
+        PresenceState,
+        TrustStatus,
+    )
+except ImportError:
+    from models import (
+        PROTOCOL_VERSION,
+        Capability,
+        ConnectionState,
+        DeviceEndpoint,
+        DeviceIdentity,
+        PairedDevice,
+        PresenceState,
+        TrustStatus,
+    )
+
 
 
 # ── Windows DPAPI Secret Encryption ──────────────────────────────────────────

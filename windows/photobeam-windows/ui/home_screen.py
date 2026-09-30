@@ -30,15 +30,32 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "protocol" / "src"))
-from models import ConnectionState, PairedDevice, PresenceState, TrustStatus
+if getattr(sys, 'frozen', False):
+    _proto = os.path.join(getattr(sys, '_MEIPASS', os.path.dirname(sys.executable)), 'protocol')
+else:
+    _proto = str(Path(__file__).resolve().parent.parent.parent / "protocol")
+if _proto not in sys.path:
+    sys.path.append(_proto)
 
 try:
+    from src.models import ConnectionState, PairedDevice, PresenceState, TrustStatus
+except ImportError:
+    from models import ConnectionState, PairedDevice, PresenceState, TrustStatus
+
+
+try:
+    from connection_manager import ConnectionManager
+except (ImportError, ValueError):
     from ..connection_manager import ConnectionManager
+
+try:
     from .pairing_dialog import PairingDialog
 except (ImportError, ValueError):
-    from connection_manager import ConnectionManager
-    from pairing_dialog import PairingDialog
+    try:
+        from ui.pairing_dialog import PairingDialog
+    except (ImportError, ValueError):
+        from pairing_dialog import PairingDialog
+
 
 
 class HomeScreen(QWidget):

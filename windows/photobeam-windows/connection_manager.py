@@ -18,17 +18,36 @@ import time
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "protocol" / "src"))
-from models import (
-    Capability,
-    ConnectionState,
-    DeviceEndpoint,
-    DeviceIdentity,
-    PairedDevice,
-    PairingPayload,
-    PresenceState,
-    TrustStatus,
-)
+if getattr(sys, 'frozen', False):
+    _proto = os.path.join(getattr(sys, '_MEIPASS', os.path.dirname(sys.executable)), 'protocol')
+else:
+    _proto = str(Path(__file__).resolve().parent.parent.parent / "protocol")
+if _proto not in sys.path:
+    sys.path.append(_proto)
+
+try:
+    from src.models import (
+        Capability,
+        ConnectionState,
+        DeviceEndpoint,
+        DeviceIdentity,
+        PairedDevice,
+        PairingPayload,
+        PresenceState,
+        TrustStatus,
+    )
+except ImportError:
+    from models import (
+        Capability,
+        ConnectionState,
+        DeviceEndpoint,
+        DeviceIdentity,
+        PairedDevice,
+        PairingPayload,
+        PresenceState,
+        TrustStatus,
+    )
+
 
 try:
     from .discovery import DiscoveredPeer, DiscoveryService

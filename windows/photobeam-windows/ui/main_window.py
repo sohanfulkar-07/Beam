@@ -19,8 +19,10 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-
-from ..connection_manager import ConnectionManager
+try:
+    from connection_manager import ConnectionManager
+except (ImportError, ValueError):
+    from ..connection_manager import ConnectionManager
 from .history_screen import HistoryScreen
 from .home_screen import HomeScreen
 from .receive_screen import ReceiveScreen
@@ -83,6 +85,12 @@ class MainWindow(QMainWindow):
 
     def _show_send(self):
         self._stack.setCurrentIndex(2)
+
+    def _show_history(self):
+        self._stack.setCurrentIndex(3)
+        if hasattr(self._history, "refresh"):
+            self._history.refresh()
+
 
     def _show_send_to_device(self, device_id: str):
         self._stack.setCurrentIndex(2)
