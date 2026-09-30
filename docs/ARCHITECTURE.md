@@ -118,7 +118,73 @@ Total overhead per chunk: 58 bytes.
 - Cert fingerprint included in QR for TOFU pinning
 - QR expires after 5 minutes (configurable)
 - Session invalidated after transfer complete / cancel / expiry
-- No credentials stored on disk
+- No credentials stored unencrypted on disk
+- Persistent identity keys protected via Windows DPAPI (CryptProtectData) and Android Keystore
+- Forward secrecy via ephemeral session keys, authentication via persistent Ed25519 identity key signatures
+
+## Persistent Device Identity & Trust
+
+```
+[Device Identity]
+  ├── id (UUID4)
+  ├── display_name (User-editable)
+  ├── public_key (Ed25519 raw bytes / Base64)
+  ├── trust_status (unpaired | pending_approval | trusted | revoked)
+  └── capabilities [file_transfer, screen_mirror_send, screen_mirror_receive, second_display]
+```
+
+- **Windows Storage**: Encrypted with DPAPI (`CryptProtectData`/`CryptUnprotectData` via `crypt32.dll`), persisted to `%APPDATA%\PhotoBeam\pairings.json`.
+- **Android Storage**: Hardware-backed Android Keystore for key generation and cryptographic signing, with `EncryptedSharedPreferences` / DPAPI equivalent for metadata.
+- **Forget vs Revoke**:
+  - `Forget`: Removes the pairing record from local device.
+  - `Revoke`: Explicitly revokes trust status for the remote device, transitioning state to `REVOKED` and requiring explicit re-pairing before any future communication.
+
+## Connection Management & Lifecycle
+
+Connection state is managed independently from presence, trust, and transfer progress:
+- **Trust State**: `UNPAIRED`, `PENDING_APPROVAL`, `TRUSTED`, `REVOKED`
+- **Presence State**: `UNKNOWN`, `SEARCHING`, `DISCOVERED`, `UNAVAILABLE`
+- **Connection State**: `DISCONNECTED`, `CONNECTING`, `CONNECTED`, `RECONNECTING`, `AUTHENTICATION_REQUIRED`
+- **Transport Health**: Each transport (`WIFI`, `USB`) independently reports `ACTIVE`, `DEGRADED`, or `FAILED`.
+- **Auto-Reconnect**: Exponential backoff with jitter (1s base, 30s ceiling, max 10 attempts) triggered upon presence detection of a paired device.
+
+## Local Discovery Architecture
+
+1. **Primary Protocol**: Multicast DNS (RFC 6762) over UDP `224.0.0.251:5353`.
+   - Service name: `_photobeam._tcp.local.`
+2. **Fallback Protocol**: Local subnet UDP broadcast to port `47475`.
+3. **Wire Framing (`PBMD`)**:
+   - Magic: `0x50424D44` (ASCII "PBMD")
+   - Payload: JSON advertisement containing device UUID, name, addresses, port, active transports, and supported capabilities.
+4. **Security Boundary**: Discovery broadcast is unauthenticated. Receiving a discovery packet moves presence to `DISCOVERED`, but connection requires full Ed25519 mutual authentication before reaching `CONNECTED`.
+
+## Screen Mirroring & Viewing Architecture
+
+```
+[Android Screen Capture] (MediaProjection + VirtualDisplay + ImageReader)
+  ├── Low-latency JPEG/H.264 packetizer
+  └── Backpressure frame dropping (queues bounded to 2 frames)
+        │
+        ▼ (PBMS Binary Stream over TLS)
+[Windows Screen Viewer] (PyQt6 QWidget + QPainter)
+  ├── Frame decoder & latency tracker
+  ├── Metrics overlay (FPS, latency, bitrate)
+  └── Drag-and-Drop file drop target
+```
+
+- **Binary Frame Format (`PBMS`)**:
+  - `[4B Magic: 0x50424D53]` `[2B Version: 1]` `[2B FrameType]`
+  - `[4B FrameID]` `[8B Timestamp]` `[2B Width]` `[2B Height]` `[4B PayloadLength]`
+  - `[PayloadLength bytes: encoded frame]`
+- **Drag-and-Drop Integration**: Files dragged and dropped onto the Windows screen viewer widget are intercepted via `QDropEvent`, verified for filesystem validity, and handed directly to `TransferManager` to transfer across the active high-speed channel.
+
+## Second Display Mode (Extended Desktop)
+
+- **Architecture Reality**: An extended desktop monitor in Windows requires a true Windows Display Driver Model (WDDM) Indirect Display Driver (IddCx).
+- **Security Constraints**: Kernel-mode or UMDF drivers require Microsoft WHQL / EV (Extended Validation) code signing certificates and administrator installation privileges.
+- **PhotoBeam Implementation**:
+  - Full driver specifications, architecture, and installation pipeline documented in `docs/SECOND_DISPLAY.md`.
+  - Application UI honestly reports second-display mode as an experimental/prototype feature requiring virtual display driver components, rather than faking an extended desktop.
 
 ## Multi-path Scheduling
 
@@ -126,3 +192,4 @@ Scheduler runs every 500ms measurement window.
 Weights chunks proportionally to each transport's measured throughput.
 If a transport fails: its pending-but-unconfirmed chunks are rescheduled.
 Chunk is only marked "done" after ACK from receiver.
+

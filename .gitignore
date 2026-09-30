@@ -11,6 +11,8 @@ venv/
 
 # Android
 android/.gradle/
+android/.kotlin/
+.kotlin/
 android/build/
 android/app/build/
 android/local.properties
@@ -21,6 +23,7 @@ android/.idea/
 *.jks
 release.properties
 android/app/release.properties
+
 
 
 # Windows

@@ -23,7 +23,10 @@ if _proto not in sys.path:
 
 from src.transport import Transport, TransportStatus
 
-from .wifi_transport import WiFiTransport  # USB transport is TCP over ADB tunnel
+try:
+    from .wifi_transport import WiFiTransport
+except (ImportError, ValueError):
+    from wifi_transport import WiFiTransport  # USB transport is TCP over ADB tunnel
 
 # Known ADB locations on Windows
 ADB_SEARCH_PATHS = [

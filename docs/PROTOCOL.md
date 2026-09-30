@@ -155,3 +155,103 @@ Receiver tracks received chunk IDs in a bitset.
 3. Receiver replies `RESUME_STATE` for each in-progress file.
 4. Sender resends only missing chunks.
 5. If session expired: receiver sends `{"type":"ERROR","code":"session_expired"}`.
+
+---
+
+## Persistent Cryptographic Pairing Protocol
+
+PhotoBeam devices establish persistent mutual trust using Ed25519 asymmetric cryptography.
+
+### Pairing Flow
+
+```
+Device A (Displays QR)                     Device B (Scans QR)
+      |                                           |
+      |--- Displays QR (ephemeral token, -------->| (Scans QR)
+      |    device_id, Ed25519 public key,         |
+      |    pairing_nonce, addrs, port)            |
+      |                                           |
+      |<-- TLS 1.3 Handshake (TOFU cert pinning)--|
+      |                                           |
+      |<-- PAIR_REQUEST --------------------------|
+      |    {device_id, name, public_key, nonce}   |
+      |                                           |
+      |--- User Prompt: "Trust Device B?" --------|
+      |    [Approve / Decline]                    |
+      |                                           |
+      |--- PAIR_CONFIRM ------------------------->|
+      |    {trusted: true, device_id, name}       |
+      |                                           |
+      | [Both persist PairedDevice in Keystore/   |
+      |  DPAPI encrypted storage]                 |
+```
+
+### QR Pairing Payload Schema
+```json
+{
+  "v": 1,
+  "sid": "<session-uuid>",
+  "rid": "<receiver-device-uuid>",
+  "name": "<user-friendly-device-name>",
+  "pk": "<ed25519-public-key-base64>",
+  "nonce": "<16-byte-hex-nonce>",
+  "caps": ["file_transfer", "screen_mirror_send", "screen_mirror_receive", "second_display"],
+  "addrs": ["192.168.1.15"],
+  "port": 47474,
+  "transports": ["wifi", "usb"],
+  "token": "<32-byte-hex-session-token>",
+  "exp": 1700000300,
+  "cert_fp": "sha256:<tls-fingerprint-hex>"
+}
+```
+
+---
+
+## Local Discovery Wire Protocol (`PBMD`)
+
+For local network presence detection across mDNS (multicast `224.0.0.251:5353`) and subnet broadcast (UDP `47475`).
+
+### Binary Framing
+```
+Offset  Size  Field
+0       4     Magic: 0x50424D44 ("PBMD")
+4       2     Version: 1 (uint16 BE)
+6       2     Reserved / Flags (uint16 BE)
+8       4     JSON payload length (uint32 BE)
+12      N     JSON advertisement payload (UTF-8)
+```
+
+### JSON Advertisement
+```json
+{
+  "device_id": "4a2b1c3d-...",
+  "device_name": "Sohan's PC",
+  "addrs": ["192.168.1.100"],
+  "port": 47474,
+  "transports": ["wifi", "usb"],
+  "capabilities": ["file_transfer", "screen_mirror_receive"],
+  "protocol_version": 1
+}
+```
+
+---
+
+## Screen Streaming Binary Protocol (`PBMS`)
+
+Low-latency screen mirroring channel multiplexed over authenticated TLS socket.
+
+### Binary Framing
+```
+Offset  Size  Field
+0       4     Magic: 0x50424D53 ("PBMS")
+4       2     Version: 1 (uint16 BE)
+6       2     Frame type: 0x0001 = KEYFRAME, 0x0002 = DELTA (uint16 BE)
+8       4     Frame sequence ID (uint32 BE)
+12      8     Timestamp milliseconds (uint64 BE)
+20      2     Frame width in pixels (uint16 BE)
+22      2     Frame height in pixels (uint16 BE)
+24      4     Payload length in bytes (uint32 BE)
+28      N     Compressed video frame data (JPEG / H.264 NALUs)
+```
+Total frame header: 28 bytes. Bounded queue backpressure guarantees latency is bounded under network jitter.
+

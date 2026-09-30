@@ -206,4 +206,63 @@ QFrame#details_panel {
     border-radius: 8px;
     padding: 10px;
 }
+
+/* ── Status Badges & Pills ───────────────────────────────────── */
+QLabel#badge_green {
+    background-color: rgba(74, 222, 128, 0.15);
+    color: #4ade80;
+    font-size: 12px;
+    font-weight: 600;
+    border-radius: 6px;
+    padding: 3px 8px;
+}
+QLabel#badge_blue {
+    background-color: rgba(96, 165, 250, 0.15);
+    color: #60a5fa;
+    font-size: 12px;
+    font-weight: 600;
+    border-radius: 6px;
+    padding: 3px 8px;
+}
+QLabel#badge_gray {
+    background-color: rgba(148, 163, 184, 0.15);
+    color: #94a3b8;
+    font-size: 12px;
+    font-weight: 600;
+    border-radius: 6px;
+    padding: 3px 8px;
+}
+QLabel#badge_orange {
+    background-color: rgba(251, 146, 60, 0.15);
+    color: #fb923c;
+    font-size: 12px;
+    font-weight: 600;
+    border-radius: 6px;
+    padding: 3px 8px;
+}
+QPushButton#action_sm {
+    background-color: #1e293b;
+    color: #e2e8f0;
+    border: 1px solid #334155;
+    border-radius: 8px;
+    padding: 6px 14px;
+    font-size: 13px;
+    font-weight: 500;
+}
+QPushButton#action_sm:hover {
+    background-color: #273549;
+    border-color: #4a6489;
+}
+QPushButton#action_primary_sm {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #3b82f6, stop:1 #6366f1);
+    color: #ffffff;
+    border: none;
+    border-radius: 8px;
+    padding: 6px 14px;
+    font-size: 13px;
+    font-weight: 600;
+}
+QPushButton#action_primary_sm:hover {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #60a5fa, stop:1 #818cf8);
+}
 """

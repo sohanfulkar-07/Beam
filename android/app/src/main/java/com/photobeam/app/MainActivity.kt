@@ -18,6 +18,7 @@ import com.photobeam.app.ui.screens.HomeScreen
 import com.photobeam.app.ui.screens.ReceiveScreen
 import com.photobeam.app.ui.screens.SendScreen
 import com.photobeam.app.ui.screens.HistoryScreen
+import com.photobeam.app.ui.screens.PairScreen
 import com.photobeam.app.ui.theme.PhotoBeamTheme
 
 import androidx.compose.runtime.getValue
@@ -174,7 +175,17 @@ fun PhotoBeamApp(
             HomeScreen(
                 onNavigateReceive = { navController.navigate("receive") },
                 onNavigateSend = { navController.navigate("send") },
+                onNavigatePair = { navController.navigate("pair") },
                 onNavigateHistory = { navController.navigate("history") },
+                onNavigateMirror = { _ ->
+                    // Screen mirror trigger
+                }
+            )
+        }
+        composable("pair") {
+            PairScreen(
+                onBack = { navController.popBackStack() },
+                onPairingComplete = { navController.popBackStack() }
             )
         }
         composable("receive") {

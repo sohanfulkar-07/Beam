@@ -434,7 +434,8 @@ class PairingPayload:
 def encode_pairing_payload(payload: PairingPayload) -> str:
     """Encode PairingPayload to photobeam://pair/... URI."""
     import base64
-    json_str = str(payload.to_dict()).replace("'", '"')
+    import json
+    json_str = json.dumps(payload.to_dict(), separators=(',', ':'))
     b64 = base64.urlsafe_b64encode(json_str.encode("utf-8")).decode("ascii").rstrip("=")
     return f"photobeam://pair/{b64}"
 

@@ -259,8 +259,9 @@ data class DeviceIdentity(
             trustStatus = TrustStatus.valueOf(obj.optString("trust_status", "UNPAIRED")),
             appVersion = obj.optString("app_version", ""),
             protocolVersion = obj.optInt("protocol_version", PROTOCOL_VERSION),
-            capabilities = (0 until obj.optJSONArray("capabilities")?.length() ?: 0)
-                .map { Capability.valueOf(obj.getJSONArray("capabilities").getString(it)) },
+            capabilities = obj.optJSONArray("capabilities")?.let { arr ->
+                (0 until arr.length()).map { Capability.valueOf(arr.getString(it)) }
+            } ?: emptyList(),
         )
     }
 }
