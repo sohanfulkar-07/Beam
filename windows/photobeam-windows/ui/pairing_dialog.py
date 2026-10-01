@@ -33,7 +33,10 @@ import qrcode
 if getattr(sys, 'frozen', False):
     _proto = os.path.join(getattr(sys, '_MEIPASS', os.path.dirname(sys.executable)), 'protocol')
 else:
-    _proto = str(Path(__file__).resolve().parent.parent.parent / "protocol")
+    _p = Path(__file__).resolve()
+    _proto = str(_p.parent.parent.parent.parent / "protocol")
+    if not os.path.exists(_proto):
+        _proto = str(_p.parent.parent.parent / "protocol")
 if _proto not in sys.path:
     sys.path.append(_proto)
 

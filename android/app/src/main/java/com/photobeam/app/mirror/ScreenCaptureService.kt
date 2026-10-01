@@ -16,7 +16,9 @@ import android.media.ImageReader
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.util.DisplayMetrics
 import android.util.Log
 import android.view.WindowManager
@@ -163,8 +165,39 @@ class ScreenCaptureService : Service() {
 
         scope.launch {
             try {
+                // 1. Establish socket connection to PC mirror listener (try USB 127.0.0.1 first, then fallback to host)
+                val sock = Socket()
+                sock.tcpNoDelay = true
+                var connected = false
+                try {
+                    sock.connect(InetSocketAddress("127.0.0.1", port), 800)
+                    connected = true
+                    Log.i(tag, "[DIAG] [MIRROR_SOCK] Connected to mirror listener via USB reverse tunnel (127.0.0.1:$port)")
+                } catch (e: Exception) {
+                    Log.d(tag, "USB tunnel mirror connect attempt failed: $e, trying host $host:$port")
+                }
+
+                if (!connected) {
+                    sock.connect(InetSocketAddress(host, port), 4000)
+                    Log.i(tag, "[DIAG] [MIRROR_SOCK] Connected to mirror listener via Wi-Fi ($host:$port)")
+                }
+
+                streamSocket = sock
+                val out = sock.getOutputStream()
+
+                // 2. Obtain MediaProjection and register mandatory callback (Android 14+ requirement)
                 val mpManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-                mediaProjection = mpManager.getMediaProjection(resultCode, resultData)
+                val mp = mpManager.getMediaProjection(resultCode, resultData)
+                    ?: throw IllegalStateException("MediaProjection returned null")
+                mediaProjection = mp
+
+                val mainHandler = Handler(Looper.getMainLooper())
+                mp.registerCallback(object : MediaProjection.Callback() {
+                    override fun onStop() {
+                        Log.i(tag, "[DIAG] [MIRROR_STOP] MediaProjection stopped by system")
+                        stopStreaming()
+                    }
+                }, mainHandler)
 
                 val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
                 val metrics = DisplayMetrics()
@@ -177,7 +210,7 @@ class ScreenCaptureService : Service() {
 
                 imageReader = ImageReader.newInstance(targetWidth, targetHeight, PixelFormat.RGBA_8888, 2)
 
-                virtualDisplay = mediaProjection?.createVirtualDisplay(
+                virtualDisplay = mp.createVirtualDisplay(
                     "PhotoBeamMirrorDisplay",
                     targetWidth,
                     targetHeight,
@@ -185,13 +218,8 @@ class ScreenCaptureService : Service() {
                     DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
                     imageReader?.surface,
                     null,
-                    null
+                    mainHandler
                 )
-
-                // Connect to Windows mirror receiver
-                streamSocket = Socket()
-                streamSocket?.connect(InetSocketAddress(host, port), 5000)
-                val out = streamSocket?.getOutputStream() ?: return@launch
 
                 var inFlight = false
 
@@ -248,7 +276,7 @@ class ScreenCaptureService : Service() {
                             inFlight = false
                         }
                     }
-                }, null)
+                }, mainHandler)
 
             } catch (e: Exception) {
                 Log.e(tag, "Screen streaming error: ${e.message}", e)

@@ -171,17 +171,17 @@ class ActiveSession:
         self.on_closed(self, reason)
 
     def _heartbeat_loop(self) -> None:
-        # Ping interval 4s, timeout after 22s of missed pongs (>5 missed pongs)
+        # Symmetric heartbeat: send ping every 5s; drop only after 18s without response
         while self.is_running:
-            time.sleep(4.0)
+            time.sleep(5.0)
             if not self.is_running:
                 break
             now = time.time()
 
-            # Heartbeat timeout check
-            if now - self.last_pong_time > 22.0:
+            # Heartbeat timeout check (drop after 18s without response)
+            if now - self.last_pong_time > 18.0:
                 logger.warning(
-                    "[DIAG] [HEARTBEAT_TIMEOUT] Missed pongs for >22s from %s, closing session",
+                    "[DIAG] [HEARTBEAT_TIMEOUT] Missed pongs for >18s from %s, closing session",
                     self.device_id,
                 )
                 self.close("heartbeat_timeout")
@@ -268,8 +268,6 @@ class ConnectionManager:
         )
 
         self._active_sessions: Dict[str, ActiveSession] = {}   # device_id -> ActiveSession
-        self._backoff_timers: Dict[str, float] = {}             # device_id -> next_retry_time
-        self._backoff_intervals: Dict[str, float] = {}          # device_id -> current_interval
         self._connecting_devices: Set[str] = set()
         self._connect_lock = threading.Lock()
         self._active_pairing_tokens: Dict[str, float] = {}      # token -> expiry_timestamp
@@ -277,12 +275,14 @@ class ConnectionManager:
         self._callbacks_lock = threading.Lock()
         self._on_device_updated_cbs: List[Callable[[PairedDevice], None]] = []
         self._on_pairing_request_cb: Optional[Callable[[DeviceIdentity, Callable[[bool], None]], None]] = None
+        self._on_mirror_stream_cb: Optional[Callable[[str, socket.socket], None]] = None  # (device_id, sock)
 
         self._running = False
         self._server_sock: Optional[socket.socket] = None
         self._server_thread: Optional[threading.Thread] = None
-        self._reconnect_thread: Optional[threading.Thread] = None
         self._usb_monitor_thread: Optional[threading.Thread] = None
+        self._mirror_server_sock: Optional[socket.socket] = None
+        self._mirror_server_thread: Optional[threading.Thread] = None
 
     @classmethod
     def get_instance(cls) -> ConnectionManager:
@@ -311,6 +311,13 @@ class ConnectionManager:
         # If token is sufficiently strong/valid during open pairing session
         return len(token) >= 8
 
+    def set_mirror_stream_callback(self, cb: Optional[Callable]) -> None:
+        """Register a callback invoked when Android initiates a mirror stream.
+        cb(device_id: str, client_sock: socket.socket)
+        """
+        with self._callbacks_lock:
+            self._on_mirror_stream_cb = cb
+
     def start(self) -> None:
         if self._running:
             return
@@ -320,17 +327,15 @@ class ConnectionManager:
         # Start persistent Control Server on port 47470
         self._start_server()
 
-        self._reconnect_thread = threading.Thread(
-            target=self._auto_reconnect_loop, name="PhotoBeam-AutoReconnect", daemon=True
-        )
-        self._reconnect_thread.start()
+        # Start persistent Mirror Listener on port 47478
+        self._start_mirror_listener()
 
         self._usb_monitor_thread = threading.Thread(
             target=self._usb_monitor_loop, name="PhotoBeam-UsbMonitor", daemon=True
         )
         self._usb_monitor_thread.start()
 
-        logger.info("ConnectionManager started with persistent control server, USB monitor & auto-reconnect")
+        logger.info("ConnectionManager started with persistent control server, mirror listener & USB monitor (explicit session model)")
 
     def stop(self) -> None:
         if not self._running:
@@ -338,13 +343,21 @@ class ConnectionManager:
         self._running = False
         self.discovery_service.stop()
 
-        # Close server socket
+        # Close control server socket
         if self._server_sock:
             try:
                 self._server_sock.close()
             except Exception:
                 pass
             self._server_sock = None
+
+        # Close mirror listener socket
+        if self._mirror_server_sock:
+            try:
+                self._mirror_server_sock.close()
+            except Exception:
+                pass
+            self._mirror_server_sock = None
 
         # Disconnect all active sessions
         for device_id in list(self._active_sessions.keys()):
@@ -360,7 +373,7 @@ class ConnectionManager:
         """Check if a healthy active session exists for the device."""
         with self._connect_lock:
             session = self._active_sessions.get(device_id)
-            return bool(session and session.is_running and (time.time() - session.last_pong_time < 22.0))
+            return bool(session and session.is_running and (time.time() - session.last_pong_time < 18.0))
 
     def get_connected_devices(self) -> List[str]:
         """Return IDs of all currently connected devices."""
@@ -369,7 +382,7 @@ class ConnectionManager:
             return [
                 dev_id
                 for dev_id, s in self._active_sessions.items()
-                if s.is_running and (now - s.last_pong_time < 22.0)
+                if s.is_running and (now - s.last_pong_time < 18.0)
             ]
 
     def _usb_monitor_loop(self) -> None:
@@ -384,6 +397,9 @@ class ConnectionManager:
                         setup_adb_forward(adb, local_port=CONTROL_USB_PORT, remote_port=CONTROL_PORT)
                         setup_adb_reverse(adb, remote_port=47475, local_port=47474)
                         setup_adb_forward(adb, local_port=47475, remote_port=47474)
+                        # Mirror stream: Android connects TO Windows 47478 via USB reverse tunnel.
+                        # adb reverse tcp:47478 tcp:47478 routes phone's localhost:47478 -> Windows:47478
+                        setup_adb_reverse(adb, remote_port=47478, local_port=47478)
             except Exception:
                 pass
             time.sleep(4.0)
@@ -405,6 +421,82 @@ class ConnectionManager:
             logger.info("[DIAG] [SERVER_STARTED] Control server listening on 0.0.0.0:%d", CONTROL_PORT)
         except Exception as e:
             logger.warning("[DIAG] [SERVER_ERROR] Could not start control server on %d: %s", CONTROL_PORT, e)
+
+    # ── Persistent Mirror Listener (port 47478) ───────────────────────────────
+
+    MIRROR_PORT = 47478
+    MIRROR_MAGIC = b"PBMS"
+
+    def _start_mirror_listener(self) -> None:
+        """Start a background TCP listener on port 47478 for incoming mirror streams."""
+        try:
+            srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            srv.bind(("", self.MIRROR_PORT))
+            srv.listen(2)
+            srv.settimeout(2.0)
+            self._mirror_server_sock = srv
+            self._mirror_server_thread = threading.Thread(
+                target=self._mirror_listener_loop, name="PhotoBeam-MirrorListener", daemon=True
+            )
+            self._mirror_server_thread.start()
+            logger.info("[DIAG] [MIRROR_LISTENER] Mirror receiver listening on 0.0.0.0:%d", self.MIRROR_PORT)
+        except Exception as e:
+            logger.warning("[DIAG] [MIRROR_ERROR] Could not start mirror listener on %d: %s", self.MIRROR_PORT, e)
+
+    def _mirror_listener_loop(self) -> None:
+        """Accept mirror stream connections from Android ScreenCaptureService."""
+        while self._running and self._mirror_server_sock:
+            try:
+                client_sock, (client_ip, _) = self._mirror_server_sock.accept()
+                logger.info("[DIAG] [MIRROR_CONNECTED] Mirror stream from %s", client_ip)
+
+                # Identify device from connected sessions (by matching session IP or first connected)
+                device_id = self._identify_mirror_client(client_ip)
+
+                # Fire the mirror callback so the UI can open the viewer
+                with self._callbacks_lock:
+                    cb = self._on_mirror_stream_cb
+                if cb:
+                    try:
+                        cb(device_id, client_sock)
+                    except Exception as exc:
+                        logger.warning("[DIAG] [MIRROR_CB_ERROR] %s", exc)
+                        try:
+                            client_sock.close()
+                        except Exception:
+                            pass
+                else:
+                    # No viewer registered — close gracefully
+                    logger.warning("[DIAG] [MIRROR_NO_CB] No mirror viewer registered, dropping stream")
+                    try:
+                        client_sock.close()
+                    except Exception:
+                        pass
+            except socket.timeout:
+                continue
+            except Exception as e:
+                if not self._running:
+                    break
+                logger.debug("[DIAG] [MIRROR_ACCEPT_ERR] %s", e)
+                time.sleep(0.2)
+
+    def _identify_mirror_client(self, client_ip: str) -> str:
+        """Identify device_id of the connecting mirror client from active sessions."""
+        with self._connect_lock:
+            for dev_id, session in self._active_sessions.items():
+                try:
+                    peer_ip = session.sock.getpeername()[0]
+                    if peer_ip == client_ip or client_ip in ("127.0.0.1", "::1"):
+                        return dev_id
+                except Exception:
+                    pass
+            # Fallback: return the first connected device
+            if self._active_sessions:
+                return next(iter(self._active_sessions))
+        return ""
+
+
 
     def _server_loop(self) -> None:
         while self._running and self._server_sock:
@@ -515,8 +607,6 @@ class ConnectionManager:
                     session.start()
 
                 self._connecting_devices.discard(remote_id)
-                self._backoff_intervals[remote_id] = 1.0
-                self._backoff_timers[remote_id] = 0.0
                 logger.info("[DIAG] [PAIR_OK] Successfully paired with %s (%s via %s)", name, remote_id, transport_type)
                 self._notify_device_updated(paired_dev)
                 return
@@ -541,7 +631,7 @@ class ConnectionManager:
             # If an existing healthy session is active, suppress the new incoming socket.
             with self._connect_lock:
                 existing = self._active_sessions.get(remote_id)
-                if existing and existing.is_running and (time.time() - existing.last_pong_time < 20.0):
+                if existing and existing.is_running and (time.time() - existing.last_pong_time < 18.0):
                     logger.info(
                         "[DIAG] [DUPLICATE_SUPPRESSED] Active healthy session already exists for %s, closing incoming socket",
                         remote_id,
@@ -572,8 +662,6 @@ class ConnectionManager:
 
             self._connecting_devices.discard(remote_id)
             self.pairing_manager.update_connection_state(remote_id, ConnectionState.CONNECTED)
-            self._backoff_intervals[remote_id] = 1.0
-            self._backoff_timers[remote_id] = 0.0
 
             logger.info(
                 "[DIAG] [HANDSHAKE_OK] Accepted connection from %s (%s via %s)",
@@ -601,16 +689,16 @@ class ConnectionManager:
                 return
             self._active_sessions.pop(device_id, None)
 
-        logger.info("[DIAG] [DISCONNECTED] Active session closed for %s (reason=%s)", device_id, reason)
+        logger.info("[DIAG] [SESSION_CLOSED] Active session closed for %s (reason=%s)", device_id, reason)
         dev = self.pairing_manager.get_paired_device(device_id)
-        if dev and dev.connection_state == ConnectionState.CONNECTED:
-            self.pairing_manager.update_connection_state(device_id, ConnectionState.DISCONNECTED)
-            interval = self._backoff_intervals.get(device_id, 1.0)
-            self._backoff_intervals[device_id] = min(interval * 2.0, 30.0)
-            self._backoff_timers[device_id] = time.time() + interval
-            updated = self.pairing_manager.get_paired_device(device_id)
-            if updated:
-                self._notify_device_updated(updated)
+        if not dev:
+            return
+
+        # Immediate clean transition to DISCONNECTED — no auto-reconnect backoff loops
+        self.pairing_manager.update_connection_state(device_id, ConnectionState.DISCONNECTED)
+        updated = self.pairing_manager.get_paired_device(device_id)
+        if updated:
+            self._notify_device_updated(updated)
 
     # ── Callbacks registration ────────────────────────────────────────────────
 
@@ -782,8 +870,6 @@ class ConnectionManager:
                         session.start()
 
                     self.pairing_manager.update_connection_state(payload.rid, ConnectionState.CONNECTED)
-                    self._backoff_intervals[payload.rid] = 1.0
-                    self._backoff_timers[payload.rid] = 0.0
                 else:
                     self.pairing_manager.update_connection_state(payload.rid, ConnectionState.DISCONNECTED)
 
@@ -813,7 +899,7 @@ class ConnectionManager:
         def _connect():
             # Duplicate connection suppression: Check if active healthy session exists
             existing = self._active_sessions.get(device_id)
-            if existing and existing.is_running and (time.time() - existing.last_pong_time < 20.0):
+            if existing and existing.is_running and (time.time() - existing.last_pong_time < 18.0):
                 logger.info("[DIAG] [DUPLICATE_SUPPRESSED] Already connected to %s", device_id)
                 if on_connected:
                     on_connected()
@@ -895,7 +981,7 @@ class ConnectionManager:
                 if connected_sock:
                     with self._connect_lock:
                         existing = self._active_sessions.get(device_id)
-                        if existing and existing.is_running and (time.time() - existing.last_pong_time < 20.0):
+                        if existing and existing.is_running and (time.time() - existing.last_pong_time < 18.0):
                             logger.info("[DIAG] [CONCURRENT_COLLISION_RESOLVED] Already have healthy session for %s, discarding redundant outgoing socket", device_id)
                             try:
                                 connected_sock.close()
@@ -913,8 +999,6 @@ class ConnectionManager:
                         session.start()
 
                     self.pairing_manager.update_connection_state(device_id, ConnectionState.CONNECTED)
-                    self._backoff_intervals[device_id] = 1.0
-                    self._backoff_timers[device_id] = 0.0
 
                     logger.info("[DIAG] [HANDSHAKE_OK] Outgoing connection active for %s", dev.identity.name)
                     updated = self.pairing_manager.get_paired_device(device_id)
@@ -927,11 +1011,7 @@ class ConnectionManager:
                         logger.info("[DIAG] [CONNECT_CONCURRENT] Outgoing attempt failed but active session exists for %s", device_id)
                     else:
                         self.pairing_manager.update_connection_state(device_id, ConnectionState.DISCONNECTED)
-                        interval = self._backoff_intervals.get(device_id, 1.0)
-                        self._backoff_intervals[device_id] = min(interval * 2.0, 30.0)
-                        self._backoff_timers[device_id] = time.time() + interval
-
-                        logger.info("[DIAG] [DISCONNECTED] Could not establish connection to %s, retry in %.1fs", dev.identity.name, interval)
+                        logger.info("[DIAG] [DISCONNECTED] Could not establish connection to %s", dev.identity.name)
                         updated = self.pairing_manager.get_paired_device(device_id)
                         if updated:
                             self._notify_device_updated(updated)
@@ -994,43 +1074,20 @@ class ConnectionManager:
         session = self._active_sessions.get(device_id)
         return session is not None and session.is_running
 
+    def get_active_connected_device_id(self) -> str:
+        """Return the device_id of the currently active session, or first CONNECTED paired device."""
+        with self._connect_lock:
+            for dev_id, session in self._active_sessions.items():
+                if session and session.is_running:
+                    return dev_id
+        # Fallback: check paired devices state
+        for dev in self.pairing_manager.get_paired_devices():
+            if dev.connection_state == ConnectionState.CONNECTED:
+                return dev.identity.device_id
+        return ""
+
     def get_active_transports(self, device_id: str) -> List[str]:
         session = self._active_sessions.get(device_id)
         if session and session.is_running:
             return [session.transport_type]
         return []
-
-    # ── Auto-Reconnect Loop ───────────────────────────────────────────────────
-
-    def _auto_reconnect_loop(self) -> None:
-        while self._running:
-            time.sleep(2.0)
-            now = time.time()
-            paired_devices = self.pairing_manager.get_paired_devices()
-
-            for dev in paired_devices:
-                dev_id = dev.identity.device_id
-                if dev.identity.trust_status != TrustStatus.TRUSTED:
-                    continue
-
-                session = self._active_sessions.get(dev_id)
-                if session and session.is_running:
-                    # Active session is healthy; ensure connection_state reflects CONNECTED
-                    if dev.connection_state != ConnectionState.CONNECTED:
-                        self.pairing_manager.update_connection_state(dev_id, ConnectionState.CONNECTED)
-                        updated = self.pairing_manager.get_paired_device(dev_id)
-                        if updated:
-                            self._notify_device_updated(updated)
-                    continue
-
-                if dev.connection_state == ConnectionState.CONNECTED:
-                    # Health check on active session
-                    if not session or not session.is_running:
-                        logger.info("Connection lost for %s, marking disconnected", dev.identity.name)
-                        self.disconnect_device(dev_id)
-                    continue
-
-                if dev.presence_state == PresenceState.DISCOVERED and dev.connection_state == ConnectionState.DISCONNECTED:
-                    next_retry = self._backoff_timers.get(dev_id, 0.0)
-                    if now >= next_retry and dev_id not in self._connecting_devices:
-                        self.connect_device(dev_id)

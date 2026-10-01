@@ -176,6 +176,30 @@ class ScreenViewer(QWidget):
         self._stream_thread = threading.Thread(target=_listen_loop, name="PhotoBeam-MirrorReceiver", daemon=True)
         self._stream_thread.start()
 
+    def start_with_socket(self, sock: socket.socket) -> None:
+        """Start reading mirror frames from an already-connected socket.
+        Used when ConnectionManager's background listener accepted the connection.
+        """
+        if self._running:
+            return
+        self._running = True
+        self._client_sock = sock
+
+        def _read_loop():
+            try:
+                self._read_stream(sock)
+            finally:
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+
+        self._stream_thread = threading.Thread(target=_read_loop, name="PhotoBeam-MirrorReader", daemon=True)
+        self._stream_thread.start()
+        logger.info("ScreenViewer: reading mirror stream from pre-connected socket")
+
+
+
     def _read_stream(self, sock: socket.socket):
         """Reads framed JPEG/H.264 video frames from socket."""
         sock.settimeout(5.0)

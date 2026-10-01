@@ -17,7 +17,7 @@ from typing import List, Optional
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QLabel, QFrame, QProgressBar, QFileDialog,
-    QScrollArea, QSizePolicy, QLineEdit, QMessageBox, QApplication,
+    QScrollArea, QSizePolicy, QLayout, QLineEdit, QMessageBox, QApplication,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QThread, QObject, QTimer
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QPixmap
@@ -33,10 +33,21 @@ if PROTO not in sys.path:
 from src.session import SessionManager
 
 from src.qr_payload import decode_qr_payload
-from src.models import DEFAULT_PORT, MessageType, CHUNK_HEADER_SIZE
+try:
+    from src.models import DEFAULT_PORT, MessageType, CHUNK_HEADER_SIZE, ConnectionState, PresenceState
+except ImportError:
+    from models import DEFAULT_PORT, MessageType, CHUNK_HEADER_SIZE, ConnectionState, PresenceState
 from src.scheduler import Scheduler
 from src.resume import ResumeManager
 from src.transfer import TransferManager
+
+try:
+    from connection_manager import ConnectionManager
+except (ImportError, ValueError):
+    try:
+        from ..connection_manager import ConnectionManager
+    except (ImportError, ValueError):
+        ConnectionManager = None
 
 try:
     from transport.wifi_transport import WiFiTransport
@@ -200,37 +211,19 @@ class SenderWorker(QObject):
         scheduler = Scheduler()
         wifi_transport = None
         usb_transport = None
-
-        self.status.emit("Looking for devices…")
-        for addr in payload.addrs:
-            try:
-                t = WiFiTransport("wifi")
-                t.connect(addr, payload.port, timeout=10.0, cert_fp=payload.cert_fp)
-                wifi_transport = t
-                scheduler.add_transport(t)
-                break
-            except Exception:
-                continue
-
-        if wifi_transport is None:
-            self.error.emit(
-                f"Could not connect to receiver.\nTried addresses: {', '.join(payload.addrs)}\nEnsure both devices are on the same local network.",
-                "connection_failed"
-            )
-            return
-
         active_transports_desc = "Wi-Fi"
         self._transport_type = "Wi-Fi"
 
+        # 1. Try USB transport first if available via ADB
         adb_avail, _ = UsbTransport.is_available()
         if "usb" in payload.transports or adb_avail:
             try:
-                self.status.emit("Checking USB connection…")
+                self.status.emit("Connecting via USB tunnel…")
                 u = UsbTransport("usb")
                 u.connect(
                     port=DEFAULT_PORT + 1,
                     target_port=payload.port,
-                    timeout=5.0,
+                    timeout=4.0,
                     cert_fp=payload.cert_fp,
                 )
                 u.send_json({
@@ -244,12 +237,39 @@ class SenderWorker(QObject):
                 if ack.get("type") == MessageType.HELLO_ACK:
                     usb_transport = u
                     scheduler.add_transport(u)
-                    active_transports_desc = "Wi-Fi + USB (Multi-path)"
-                    self._transport_type = "Wi-Fi + USB"
+                    active_transports_desc = "USB Tunnel"
+                    self._transport_type = "USB"
             except Exception:
                 pass
 
-        device_name = f"Receiver ({payload.addrs[0]})"
+        # 2. Try Wi-Fi transport across payload addresses
+        self.status.emit("Connecting via Wi-Fi…")
+        for addr in payload.addrs:
+            if addr.startswith("127."):
+                continue
+            try:
+                t = WiFiTransport("wifi")
+                t.connect(addr, payload.port, timeout=4.0, cert_fp=payload.cert_fp)
+                wifi_transport = t
+                scheduler.add_transport(t)
+                if usb_transport:
+                    active_transports_desc = "Wi-Fi + USB (Multi-path)"
+                    self._transport_type = "Wi-Fi + USB"
+                else:
+                    active_transports_desc = "Wi-Fi"
+                    self._transport_type = "Wi-Fi"
+                break
+            except Exception:
+                continue
+
+        if not scheduler.available_transports():
+            self.error.emit(
+                f"Could not connect to receiver.\nTried USB and addresses: {', '.join(payload.addrs)}\nEnsure receiver has PhotoBeam open in Receive mode.",
+                "connection_failed"
+            )
+            return
+
+        device_name = f"Receiver ({payload.addrs[0] if payload.addrs else 'USB'})"
         self.connected.emit(device_name, active_transports_desc)
 
         # Handshake on control channel
@@ -530,8 +550,10 @@ class SendScreen(QWidget):
     go_back = pyqtSignal()
     go_history = pyqtSignal()
 
-    def __init__(self):
+    def __init__(self, connection_manager: Optional[Any] = None):
         super().__init__()
+        self.connection_manager = connection_manager or (ConnectionManager.get_instance() if ConnectionManager else None)
+        self._target_device_id: Optional[str] = None
         self._files: List[Path] = []
         self._uri: Optional[str] = None
         self._worker: Optional[SenderWorker] = None
@@ -539,6 +561,9 @@ class SendScreen(QWidget):
         self._speed_tracker = SpeedTracker(alpha=0.25)
 
         self._build_ui()
+        if self.connection_manager and hasattr(self.connection_manager, "add_device_updated_callback"):
+            self.connection_manager.add_device_updated_callback(self._on_device_updated_from_bg)
+        self.refresh_connection_status()
         self.setAcceptDrops(True)
 
     def _build_ui(self):
@@ -567,7 +592,7 @@ class SendScreen(QWidget):
         self._card = QFrame()
         self._card.setObjectName("card")
         self._card_layout = QVBoxLayout(self._card)
-        self._card_layout.setSpacing(16)
+        self._card_layout.setSpacing(14)
         self._card_layout.setContentsMargins(32, 28, 32, 28)
 
         # Title
@@ -576,11 +601,20 @@ class SendScreen(QWidget):
         heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._card_layout.addWidget(heading)
 
-        # Connection Status Badge
-        self._conn_badge = QLabel("Looking for devices…")
+        # Dynamic Connection Status Badge
+        self._conn_badge = QLabel("Ready to send")
         self._conn_badge.setObjectName("badge_gray")
         self._conn_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._card_layout.addWidget(self._conn_badge, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        # Helpful hint / instruction label for the receiver device
+        self._device_instruction_label = QLabel("")
+        self._device_instruction_label.setObjectName("muted_text")
+        self._device_instruction_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._device_instruction_label.setWordWrap(True)
+        self._device_instruction_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self._device_instruction_label.setStyleSheet("color: #94a3b8; font-size: 13px; margin-bottom: 2px;")
+        self._card_layout.addWidget(self._device_instruction_label)
 
         # QR Input Area
         qr_row = QHBoxLayout()
@@ -641,6 +675,7 @@ class SendScreen(QWidget):
         self._file_list_layout = QVBoxLayout(self._file_list_widget)
         self._file_list_layout.setSpacing(6)
         self._file_list_layout.setContentsMargins(0, 0, 0, 0)
+        self._file_list_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
         self._file_scroll.setWidget(self._file_list_widget)
         sel_layout.addWidget(self._file_scroll)
 
@@ -903,6 +938,7 @@ class SendScreen(QWidget):
         for p in self._files:
             row = QFrame()
             row.setObjectName("transfer_item")
+            row.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             row_layout = QHBoxLayout(row)
             row_layout.setContentsMargins(10, 6, 10, 6)
 
@@ -932,16 +968,91 @@ class SendScreen(QWidget):
 
         self._update_send_btn()
 
+    def _on_device_updated_from_bg(self, dev):
+        """Called when a paired device connection or presence state changes in background."""
+        QTimer.singleShot(0, self.refresh_connection_status)
+
+    def refresh_connection_status(self):
+        """Update connection badge and instruction dynamically based on active sessions."""
+        if self._uri and self._uri.startswith("photobeam://connect/"):
+            self._conn_badge.setText("● Ready to connect (Receiver Link Verified)")
+            self._conn_badge.setStyleSheet("color: #4ade80; font-weight: 600;")
+            if hasattr(self, "_device_instruction_label"):
+                self._device_instruction_label.setText("Receiver is ready. Choose your files and tap 'Send Files'.")
+            return
+
+        if not self.connection_manager:
+            self._conn_badge.setText("○ Ready to send")
+            self._conn_badge.setStyleSheet("color: #94a3b8; font-weight: 500;")
+            if hasattr(self, "_device_instruction_label"):
+                self._device_instruction_label.setText("Select files and paste a receiver's photobeam://connect/... link below.")
+            return
+
+        pm = getattr(self.connection_manager, "pairing_manager", None)
+        devices = pm.get_paired_devices() if pm else []
+        connected_ids = self.connection_manager.get_connected_devices() if hasattr(self.connection_manager, "get_connected_devices") else []
+        sessions = self.connection_manager.get_active_sessions() if hasattr(self.connection_manager, "get_active_sessions") else {}
+
+        target_dev = None
+        if self._target_device_id and pm:
+            target_dev = pm.get_paired_device(self._target_device_id)
+        if not target_dev and connected_ids and pm:
+            target_dev = pm.get_paired_device(connected_ids[0])
+        if not target_dev and devices:
+            target_dev = devices[0]
+
+        if target_dev:
+            is_connected = (target_dev.identity.device_id in connected_ids) or (
+                ConnectionState and getattr(target_dev, "connection_state", None) == ConnectionState.CONNECTED
+            )
+            is_online = bool(PresenceState and getattr(target_dev, "presence_state", None) == PresenceState.DISCOVERED)
+
+            if is_connected:
+                sess = sessions.get(target_dev.identity.device_id)
+                transport = "USB Tunnel" if (sess and sess.transport_type == "usb") else "Wi-Fi"
+                self._conn_badge.setText(f"🟢 Connected to {target_dev.identity.name} ({transport})")
+                self._conn_badge.setStyleSheet("color: #4ade80; font-weight: 600;")
+                if hasattr(self, "_device_instruction_label"):
+                    self._device_instruction_label.setText(
+                        f"💡 On {target_dev.identity.name}, open PhotoBeam and tap 'Receive' to start receiving files, or paste link below."
+                    )
+            else:
+                self._conn_badge.setText("⚪ Disconnected (Scan QR to Connect)")
+                self._conn_badge.setStyleSheet("color: #94a3b8; font-weight: 500;")
+                if hasattr(self, "_device_instruction_label"):
+                    self._device_instruction_label.setText(
+                        f"💡 Scan QR code on {target_dev.identity.name} to connect, or paste receiver link below."
+                    )
+        else:
+            self._conn_badge.setText("⚪ Disconnected (Scan QR to Connect)")
+            self._conn_badge.setStyleSheet("color: #94a3b8; font-weight: 500;")
+            if hasattr(self, "_device_instruction_label"):
+                self._device_instruction_label.setText("Select files and scan or paste a receiver's photobeam://connect/... link below.")
+
+    def set_target_device(self, device_id: str):
+        """Set the target device to send to and refresh status."""
+        self._target_device_id = device_id
+        self.refresh_connection_status()
+
+    def set_selected_files(self, paths: List[Path]):
+        """Programmatically select files (e.g. from Drag & Drop on dashboard/mirror)."""
+        self._add_files(paths)
+
+    def set_receiver_uri(self, uri: str):
+        """Programmatically set the receiver URI."""
+        self._qr_input.setText(uri)
+
     def _on_uri_changed(self, text: str):
         t = text.strip()
         if t.startswith("photobeam://connect/"):
             self._uri = t
-            self._conn_badge.setText("○ Ready to connect")
-            self._conn_badge.setStyleSheet("color: #60a5fa; font-weight: 600;")
+            self._conn_badge.setText("● Ready to connect (Receiver Link Verified)")
+            self._conn_badge.setStyleSheet("color: #4ade80; font-weight: 600;")
+            if hasattr(self, "_device_instruction_label"):
+                self._device_instruction_label.setText("Receiver link verified. Select files and tap 'Send Files'.")
         else:
             self._uri = None
-            self._conn_badge.setText("○ Paste receiver's QR link above")
-            self._conn_badge.setStyleSheet("color: #94a3b8; font-weight: 500;")
+            self.refresh_connection_status()
         self._update_send_btn()
 
     def _update_send_btn(self):
@@ -1153,6 +1264,7 @@ class SendScreen(QWidget):
         self._details_panel.setVisible(False)
         self._details_toggle_btn.setText("Show technical details ▼")
         self._selection_container.setVisible(True)
+        self.refresh_connection_status()
         self._refresh_file_list()
 
     def _stop_worker(self):

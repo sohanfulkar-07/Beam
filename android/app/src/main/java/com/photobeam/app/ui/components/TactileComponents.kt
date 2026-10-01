@@ -174,7 +174,9 @@ fun TactileBadge(
             text = text,
             fontSize = 11.sp,
             fontWeight = FontWeight.SemiBold,
-            color = textColor
+            color = textColor,
+            maxLines = 1,
+            softWrap = false
         )
     }
 }

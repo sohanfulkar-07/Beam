@@ -127,6 +127,7 @@ fun QrScannerView(
                                 .build()
 
                             imageAnalysis.setAnalyzer(cameraExecutor) { imageProxy ->
+                                var isAsync = false
                                 try {
                                     val mediaImage = imageProxy.image
                                     if (mediaImage != null && isScanningRef.value && !hasTriggered.get()) {
@@ -134,6 +135,7 @@ fun QrScannerView(
                                             mediaImage,
                                             imageProxy.imageInfo.rotationDegrees
                                         )
+                                        isAsync = true
                                         barcodeScanner.process(inputImage)
                                             .addOnSuccessListener { barcodes ->
                                                 for (barcode in barcodes) {
@@ -152,14 +154,16 @@ fun QrScannerView(
                                                 Log.w("PhotoBeam", "Barcode scan failure", e)
                                             }
                                             .addOnCompleteListener {
-                                                imageProxy.close()
+                                                try { imageProxy.close() } catch (ignored: Exception) {}
                                             }
-                                    } else {
-                                        imageProxy.close()
                                     }
                                 } catch (e: Exception) {
                                     Log.e("PhotoBeam", "Frame processing exception", e)
-                                    imageProxy.close()
+                                    isAsync = false
+                                } finally {
+                                    if (!isAsync) {
+                                        try { imageProxy.close() } catch (ignored: Exception) {}
+                                    }
                                 }
                             }
 

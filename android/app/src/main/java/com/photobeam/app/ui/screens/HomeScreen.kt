@@ -127,7 +127,7 @@ fun HomeScreen(
             }
         }
 
-        // ── Connected Hero Card (if connected) or Quick Info ───────────────────
+        // ── Active Session Hero Card (Connected) OR Explicit "Scan PC QR" Card (Disconnected) ──
         if (connectedDevice != null) {
             TactileCard(
                 modifier = Modifier.fillMaxWidth(),
@@ -163,7 +163,7 @@ fun HomeScreen(
                                 overflow = TextOverflow.Ellipsis
                             )
                             Spacer(Modifier.width(8.dp))
-                            TactileBadge("Active", Secondary)
+                            TactileBadge("🟢 Connected", Secondary)
                         }
 
                         val transportStr = connectedDevice.endpoint?.transports?.joinToString(" • ") {
@@ -199,6 +199,66 @@ fun HomeScreen(
                         },
                         modifier = Modifier.weight(0.9f),
                         minHeight = 40.dp
+                    )
+                }
+            }
+        } else {
+            TactileCard(
+                modifier = Modifier.fillMaxWidth(),
+                backgroundColor = SurfaceElevated,
+                borderColor = CyanAccent.copy(alpha = 0.35f),
+                elevation = 6.dp,
+                onClick = onNavigatePair
+            ) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                            modifier = Modifier.weight(1f, fill = false),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            TactileGlowRing(
+                                size = 40.dp,
+                                ringColor = CyanAccent,
+                                pulse = false
+                            ) {
+                                Text("📷", fontSize = 20.sp)
+                            }
+                            Column {
+                                Text(
+                                    text = "Scan PC QR to Connect",
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = OnBackground,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = "Point camera at PC to connect",
+                                    fontSize = 11.sp,
+                                    color = OnSurfaceVariant,
+                                    maxLines = 1
+                                )
+                            }
+                        }
+
+                        Spacer(Modifier.width(8.dp))
+                        TactileBadge("⚪ Disconnected", OnSurfaceVariant)
+                    }
+
+                    TactilePillButton(
+                        text = "📷 Scan PC QR Code",
+                        active = true,
+                        onClick = onNavigatePair,
+                        modifier = Modifier.fillMaxWidth(),
+                        minHeight = 42.dp
                     )
                 }
             }
@@ -427,10 +487,10 @@ private fun DeviceCard(
 
                 // Connection badge
                 val (connColor, connLabel) = when (device.connectionState) {
-                    ConnectionState.CONNECTED -> Pair(Secondary, "Connected")
-                    ConnectionState.CONNECTING -> Pair(PrimaryLight, "Connecting")
+                    ConnectionState.CONNECTED -> Pair(Secondary, "🟢 Connected")
+                    ConnectionState.CONNECTING -> Pair(PrimaryLight, "🟡 Connecting")
                     ConnectionState.AUTHENTICATION_REQUIRED -> Pair(Error, "Auth Req")
-                    else -> Pair(OnSurfaceVariant, "Ready")
+                    else -> Pair(OnSurfaceVariant, "⚪ Disconnected")
                 }
                 TactileBadge(connLabel, connColor)
 

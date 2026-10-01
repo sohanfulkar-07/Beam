@@ -151,6 +151,7 @@ class HistoryScreen(QWidget):
     def _create_record_card(self, r: TransferRecord) -> QFrame:
         card = QFrame()
         card.setObjectName("card")
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         layout = QVBoxLayout(card)
         layout.setSpacing(10)
         layout.setContentsMargins(20, 16, 20, 16)

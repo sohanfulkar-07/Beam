@@ -39,7 +39,10 @@ from PyQt6.QtWidgets import (
 if getattr(sys, "frozen", False):
     _proto = os.path.join(getattr(sys, "_MEIPASS", os.path.dirname(sys.executable)), "protocol")
 else:
-    _proto = str(Path(__file__).resolve().parent.parent.parent / "protocol")
+    _p = Path(__file__).resolve()
+    _proto = str(_p.parent.parent.parent.parent / "protocol")
+    if not os.path.exists(_proto):
+        _proto = str(_p.parent.parent.parent / "protocol")
 if _proto not in sys.path:
     sys.path.append(_proto)
 
@@ -232,6 +235,10 @@ class HomeScreen(QWidget):
         self._lbl_ip_info.setObjectName("muted_text")
         lc_layout.addWidget(self._lbl_ip_info)
 
+        self._lbl_session_status = QLabel("⚪ Disconnected (Scan QR to Connect)")
+        self._lbl_session_status.setStyleSheet("color: #94A3B8; font-weight: 600; font-size: 12px;")
+        lc_layout.addWidget(self._lbl_session_status)
+
         show_qr_btn = QPushButton(" Show My QR Code")
         show_qr_btn.setIcon(get_icon("qr", "#E2E8F0", "#FFFFFF", 14))
         show_qr_btn.setObjectName("secondary")
@@ -378,6 +385,16 @@ class HomeScreen(QWidget):
         self._lbl_total_count.setText(f"{len(completed)} transfers")
         self._lbl_stats_volume.setText(f"Total Volume: {format_bytes(total_vol)}")
 
+        active_id = self.connection_manager.get_active_connected_device_id()
+        if active_id:
+            active_dev = self.pairing_manager.get_paired_device(active_id)
+            name = active_dev.identity.name if active_dev else active_id
+            self._lbl_session_status.setText(f"🟢 Connected to {name}")
+            self._lbl_session_status.setStyleSheet("color: #4ADE80; font-weight: 600; font-size: 12px;")
+        else:
+            self._lbl_session_status.setText("⚪ Disconnected (Scan QR to Connect)")
+            self._lbl_session_status.setStyleSheet("color: #94A3B8; font-weight: 600; font-size: 12px;")
+
         if not devices:
             empty = QFrame()
             empty.setObjectName("card")
@@ -440,6 +457,7 @@ class HomeScreen(QWidget):
     def _create_recent_transfer_card(self, r: TransferRecord) -> QFrame:
         card = QFrame()
         card.setObjectName("card")
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         layout = QHBoxLayout(card)
         layout.setContentsMargins(16, 12, 16, 12)
         layout.setSpacing(12)
@@ -482,6 +500,7 @@ class HomeScreen(QWidget):
     def _create_device_card(self, dev: PairedDevice) -> QFrame:
         card = QFrame()
         card.setObjectName("active_device_card")
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         card_layout = QVBoxLayout(card)
         card_layout.setContentsMargins(18, 16, 18, 16)
         card_layout.setSpacing(12)
@@ -545,13 +564,13 @@ class HomeScreen(QWidget):
 
         # Connection badge
         if dev.connection_state == ConnectionState.CONNECTED:
-            conn_badge = QLabel("Connected")
+            conn_badge = QLabel("🟢 Connected")
             conn_badge.setObjectName("badge_green")
         elif dev.connection_state == ConnectionState.CONNECTING:
-            conn_badge = QLabel("Connecting")
+            conn_badge = QLabel("🟡 Connecting")
             conn_badge.setObjectName("badge_blue")
         else:
-            conn_badge = QLabel("Disconnected")
+            conn_badge = QLabel("⚪ Disconnected")
             conn_badge.setObjectName("badge_gray")
         top_row.addWidget(conn_badge)
 

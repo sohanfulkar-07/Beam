@@ -2,6 +2,7 @@ package com.photobeam.app
 
 import android.app.Application
 import android.content.SharedPreferences
+import com.photobeam.app.data.ConnectionManager
 import java.util.UUID
 
 class PhotoBeamApp : Application() {
@@ -24,5 +25,10 @@ class PhotoBeamApp : Application() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        try {
+            ConnectionManager.getInstance(this).start()
+        } catch (e: Exception) {
+            android.util.Log.e("PhotoBeamApp", "Failed to start ConnectionManager: ${e.message}", e)
+        }
     }
 }

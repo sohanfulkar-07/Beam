@@ -32,7 +32,10 @@ from PyQt6.QtWidgets import (
 if getattr(sys, "frozen", False):
     _proto = os.path.join(getattr(sys, "_MEIPASS", os.path.dirname(sys.executable)), "protocol")
 else:
-    _proto = str(Path(__file__).resolve().parent.parent.parent / "protocol")
+    _p = Path(__file__).resolve()
+    _proto = str(_p.parent.parent.parent.parent / "protocol")
+    if not os.path.exists(_proto):
+        _proto = str(_p.parent.parent.parent / "protocol")
 if _proto not in sys.path:
     sys.path.append(_proto)
 
@@ -69,6 +72,9 @@ except (ImportError, ValueError):
 class MainWindow(QMainWindow):
     """PhotoBeam modern desktop dashboard main window."""
 
+    # Emitted from background thread → handled on main Qt thread to open ScreenViewer
+    mirror_stream_received = pyqtSignal(str, object)  # (device_id, client_socket)
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("PhotoBeam")
@@ -79,6 +85,10 @@ class MainWindow(QMainWindow):
         self.connection_manager = ConnectionManager.get_instance()
         self.connection_manager.start()
         self.connection_manager.add_device_updated_callback(self._on_device_updated_bg)
+
+        # Register mirror stream callback — fires when Android initiates mirroring
+        self.connection_manager.set_mirror_stream_callback(self._on_mirror_stream_bg)
+        self.mirror_stream_received.connect(self._on_mirror_stream_main)
 
         # Central container
         central = QWidget()
@@ -238,7 +248,7 @@ class MainWindow(QMainWindow):
         # Screen instances
         self._home = HomeScreen(self.connection_manager)
         self._receive = ReceiveScreen()
-        self._send = SendScreen()
+        self._send = SendScreen(self.connection_manager)
         self._history = HistoryScreen()
         self._viewer: ScreenViewer | None = None
 
@@ -265,6 +275,33 @@ class MainWindow(QMainWindow):
 
         self._show_home()
         self._update_top_status()
+
+    def _on_mirror_stream_bg(self, device_id: str, client_sock) -> None:
+        """Called from ConnectionManager background thread when Android starts mirroring.
+        We emit a Qt signal to open the viewer on the main thread."""
+        self.mirror_stream_received.emit(device_id, client_sock)
+
+    def _on_mirror_stream_main(self, device_id: str, client_sock) -> None:
+        """Opens ScreenViewer with a pre-connected socket from Android (main thread)."""
+        dev = self.connection_manager.pairing_manager.get_paired_device(device_id)
+        dev_name = dev.identity.name if dev else "Android Device"
+
+        if self._viewer:
+            self._viewer.stop()
+            self._stack.removeWidget(self._viewer)
+            self._viewer.deleteLater()
+
+        self._viewer = ScreenViewer(device_id=device_id, device_name=dev_name)
+        self._viewer.go_back.connect(self._show_home)
+        self._viewer.files_dropped.connect(self._on_viewer_files_dropped)
+        self._stack.addWidget(self._viewer)
+        self._stack.setCurrentWidget(self._viewer)
+        self._set_active_nav(-1, f"Mirror: {dev_name}")
+        # Start from already-connected socket (don't start a new listener)
+        self._viewer.start_with_socket(client_sock)
+        # Bring window to front when mirroring starts
+        self.raise_()
+        self.activateWindow()
 
     def _create_nav_item(self, label: str, icon_name: str, target_idx: int) -> QPushButton:
         btn = QPushButton(f" {label}")
@@ -308,6 +345,8 @@ class MainWindow(QMainWindow):
     def _show_send(self):
         self._stack.setCurrentIndex(2)
         self._set_active_nav(2, "Send Files")
+        if hasattr(self._send, "refresh_connection_status"):
+            self._send.refresh_connection_status()
 
     def _show_history(self):
         self._stack.setCurrentIndex(3)
@@ -319,9 +358,8 @@ class MainWindow(QMainWindow):
 
     def _show_send_to_device(self, device_id: str):
         self._show_send()
-        dev = self.connection_manager.pairing_manager.get_paired_device(device_id)
-        if dev and dev.endpoint and dev.endpoint.addrs:
-            pass
+        if hasattr(self._send, "set_target_device"):
+            self._send.set_target_device(device_id)
 
     def _on_files_dropped(self, files: list):
         self._show_send()
@@ -380,25 +418,22 @@ class MainWindow(QMainWindow):
         discovered = [d for d in devices if d.presence_state == PresenceState.DISCOVERED]
 
         if connected:
-            self._top_status_dot.setText("●")
+            self._top_status_dot.setText("🟢")
             self._top_status_dot.setStyleSheet("color: #10B981; font-size: 11px;")
             self._top_status_text.setText(f"{connected[0].identity.name} (Connected)")
-        elif discovered:
-            self._top_status_dot.setText("●")
-            self._top_status_dot.setStyleSheet("color: #38BDF8; font-size: 11px;")
-            self._top_status_text.setText(f"{discovered[0].identity.name} (Online)")
-        elif devices:
-            self._top_status_dot.setText("●")
-            self._top_status_dot.setStyleSheet("color: #94A3B8; font-size: 11px;")
-            self._top_status_text.setText(f"{len(devices)} Paired Device(s)")
         else:
-            self._top_status_dot.setText("○")
-            self._top_status_dot.setStyleSheet("color: #64748B; font-size: 11px;")
-            self._top_status_text.setText("Standby (Discoverable)")
+            self._top_status_dot.setText("⚪")
+            self._top_status_dot.setStyleSheet("color: #94A3B8; font-size: 11px;")
+            self._top_status_text.setText("Disconnected (Scan QR to Connect)")
 
     def _on_device_updated_bg(self, dev):
         from PyQt6.QtCore import QTimer
+        # Refresh top-bar status pill, home screen device list, and send screen status
+        # so that when a device connects/disconnects the PC UI updates immediately.
         QTimer.singleShot(0, self._update_top_status)
+        QTimer.singleShot(0, self._home.refresh_devices)
+        if hasattr(self, "_send") and hasattr(self._send, "refresh_connection_status"):
+            QTimer.singleShot(0, self._send.refresh_connection_status)
 
     def closeEvent(self, event):
         if self._viewer:

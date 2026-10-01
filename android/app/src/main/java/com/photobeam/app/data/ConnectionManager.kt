@@ -52,8 +52,6 @@ class ConnectionManager private constructor(private val appContext: Context) {
     val pairedDevicesFlow: StateFlow<List<PairedDevice>> = _pairedDevicesFlow.asStateFlow()
 
     private val activeSessions = ConcurrentHashMap<String, ActiveSession>()
-    private val backoffIntervals = ConcurrentHashMap<String, Long>() // device_id -> delay ms
-    private val backoffTimers = ConcurrentHashMap<String, Long>()    // device_id -> next_retry_timestamp
     private val connectingDevices = ConcurrentHashMap.newKeySet<String>()
     private val activePairingTokens = ConcurrentHashMap<String, Long>()
 
@@ -63,7 +61,6 @@ class ConnectionManager private constructor(private val appContext: Context) {
     private var wifiLock: WifiManager.WifiLock? = null
 
     private var serverJob: Job? = null
-    private var reconnectJob: Job? = null
     private var serverSocket: ServerSocket? = null
     private var isRunning = false
 
@@ -102,16 +99,14 @@ class ConnectionManager private constructor(private val appContext: Context) {
         isRunning = true
         discoveryService.start()
         startServer()
-        startAutoReconnect()
         refreshDevicesList()
-        Log.i(tag, "ConnectionManager started with persistent control server & auto-reconnect")
+        Log.i(tag, "ConnectionManager started with persistent control server (explicit QR connect model)")
     }
 
     fun stop() {
         if (!isRunning) return
         isRunning = false
         discoveryService.stop()
-        reconnectJob?.cancel()
         serverJob?.cancel()
         try {
             serverSocket?.close()
@@ -258,8 +253,6 @@ class ConnectionManager private constructor(private val appContext: Context) {
 
                 connectingDevices.remove(remoteId)
                 acquireLocks()
-                backoffIntervals[remoteId] = 1000L
-                backoffTimers[remoteId] = 0L
                 Log.i(tag, "[DIAG] [PAIR_OK] Successfully paired with $name ($remoteId via $transportType)")
                 refreshDevicesList()
                 return
@@ -290,7 +283,7 @@ class ConnectionManager private constructor(private val appContext: Context) {
             // Duplicate connection suppression
             synchronized(activeSessions) {
                 val existing = activeSessions[remoteId]
-                if (existing != null && existing.isRunning && (System.currentTimeMillis() - existing.lastPongTime < 20000L)) {
+                if (existing != null && existing.isRunning && (System.currentTimeMillis() - existing.lastPongTime < 18000L)) {
                     Log.i(tag, "[DIAG] [DUPLICATE_SUPPRESSED] Active healthy session already exists for $remoteId, closing incoming socket")
                     try { clientSock.close() } catch (e: Exception) {}
                     return
@@ -319,8 +312,6 @@ class ConnectionManager private constructor(private val appContext: Context) {
             connectingDevices.remove(remoteId)
             acquireLocks()
             pairingManager.updateConnectionState(remoteId, ConnectionState.CONNECTED)
-            backoffIntervals[remoteId] = 1000L
-            backoffTimers[remoteId] = 0L
 
             Log.i(tag, "[DIAG] [HANDSHAKE_OK] Accepted connection from ${paired.identity.name} ($remoteId via $transportType)")
             refreshDevicesList()
@@ -341,20 +332,17 @@ class ConnectionManager private constructor(private val appContext: Context) {
             }
             activeSessions.remove(deviceId)
         }
-        Log.i(tag, "[DIAG] [DISCONNECTED] Active session closed for $deviceId (reason=$reason)")
+        Log.i(tag, "[DIAG] [SESSION_CLOSED] Active session closed for $deviceId (reason=$reason)")
 
         if (activeSessions.isEmpty()) {
             releaseLocks()
         }
 
-        val dev = pairingManager.getPairedDevice(deviceId)
-        if (dev != null && dev.connectionState == ConnectionState.CONNECTED) {
-            pairingManager.updateConnectionState(deviceId, ConnectionState.DISCONNECTED)
-            val interval = backoffIntervals[deviceId] ?: 1000L
-            backoffIntervals[deviceId] = (interval * 2).coerceAtMost(30000L)
-            backoffTimers[deviceId] = System.currentTimeMillis() + interval
-            refreshDevicesList()
-        }
+        val dev = pairingManager.getPairedDevice(deviceId) ?: return
+
+        // Clean immediate transition to DISCONNECTED — devices only connect when user explicitly scans QR
+        pairingManager.updateConnectionState(deviceId, ConnectionState.DISCONNECTED)
+        refreshDevicesList()
     }
 
     // ── Pairing Workflow ──────────────────────────────────────────────────────
@@ -475,8 +463,6 @@ class ConnectionManager private constructor(private val appContext: Context) {
                         }
                         acquireLocks()
                         pairingManager.updateConnectionState(payload.rid, ConnectionState.CONNECTED)
-                        backoffIntervals[payload.rid] = 1000L
-                        backoffTimers[payload.rid] = 0L
                     } else {
                         pairingManager.updateConnectionState(payload.rid, ConnectionState.DISCONNECTED)
                     }
@@ -502,7 +488,7 @@ class ConnectionManager private constructor(private val appContext: Context) {
         scope.launch {
             // Duplicate connection suppression
             val existing = activeSessions[deviceId]
-            if (existing != null && existing.isRunning && (System.currentTimeMillis() - existing.lastPongTime < 20000L)) {
+            if (existing != null && existing.isRunning && (System.currentTimeMillis() - existing.lastPongTime < 18000L)) {
                 Log.i(tag, "[DIAG] [DUPLICATE_SUPPRESSED] Already connected to $deviceId")
                 notifyConnected(onConnected)
                 return@launch
@@ -587,7 +573,7 @@ class ConnectionManager private constructor(private val appContext: Context) {
                     var wasAlreadyHealthy = false
                     synchronized(activeSessions) {
                         val active = activeSessions[deviceId]
-                        if (active != null && active.isRunning && (System.currentTimeMillis() - active.lastPongTime < 20000L)) {
+                        if (active != null && active.isRunning && (System.currentTimeMillis() - active.lastPongTime < 18000L)) {
                             Log.i(tag, "[DIAG] [CONCURRENT_COLLISION_RESOLVED] Already have healthy session for $deviceId, discarding redundant outgoing socket")
                             try { connectedSock.close() } catch (e: Exception) {}
                             wasAlreadyHealthy = true
@@ -606,8 +592,6 @@ class ConnectionManager private constructor(private val appContext: Context) {
 
                     acquireLocks()
                     pairingManager.updateConnectionState(deviceId, ConnectionState.CONNECTED)
-                    backoffIntervals[deviceId] = 1000L
-                    backoffTimers[deviceId] = 0L
                     refreshDevicesList()
 
                     Log.i(tag, "[DIAG] [HANDSHAKE_OK] Outgoing connection active for ${dev.identity.name}")
@@ -617,13 +601,9 @@ class ConnectionManager private constructor(private val appContext: Context) {
                         Log.i(tag, "[DIAG] [CONNECT_CONCURRENT] Outgoing attempt failed but active session exists for $deviceId")
                     } else {
                         pairingManager.updateConnectionState(deviceId, ConnectionState.DISCONNECTED)
-                        val interval = backoffIntervals[deviceId] ?: 1000L
-                        backoffIntervals[deviceId] = (interval * 2).coerceAtMost(30000L)
-                        backoffTimers[deviceId] = System.currentTimeMillis() + interval
-                        refreshDevicesList()
-
-                        Log.i(tag, "[DIAG] [DISCONNECTED] Could not connect to ${dev.identity.name}, retry in ${interval}ms")
+                        Log.i(tag, "[DIAG] [DISCONNECTED] Could not connect to ${dev.identity.name}")
                         notifyFailed(onFailed, "Could not establish connection to device endpoints")
+                        refreshDevicesList()
                     }
                 }
             } finally {
@@ -715,44 +695,6 @@ class ConnectionManager private constructor(private val appContext: Context) {
     fun getActiveTransports(deviceId: String): List<String> {
         val s = activeSessions[deviceId]
         return if (s != null && s.isRunning) listOf(s.transportType) else emptyList()
-    }
-
-    private fun startAutoReconnect() {
-        reconnectJob = scope.launch {
-            while (isActive && isRunning) {
-                delay(2000L)
-                val devices = pairingManager.getPairedDevices()
-                val now = System.currentTimeMillis()
-
-                for (dev in devices) {
-                    val id = dev.identity.deviceId
-                    if (dev.identity.trustStatus != TrustStatus.TRUSTED) continue
-
-                    val session = activeSessions[id]
-                    if (session != null && session.isRunning) {
-                        if (dev.connectionState != ConnectionState.CONNECTED) {
-                            pairingManager.updateConnectionState(id, ConnectionState.CONNECTED)
-                            refreshDevicesList()
-                        }
-                        continue
-                    }
-
-                    if (dev.connectionState == ConnectionState.CONNECTED) {
-                        if (session == null || !session.isRunning) {
-                            disconnectDevice(id)
-                        }
-                        continue
-                    }
-
-                    if (dev.presenceState == PresenceState.DISCOVERED && dev.connectionState == ConnectionState.DISCONNECTED) {
-                        val retryTime = backoffTimers[id] ?: 0L
-                        if (now >= retryTime && !connectingDevices.contains(id)) {
-                            connectDevice(id)
-                        }
-                    }
-                }
-            }
-        }
     }
 
     // ── WakeLock & WifiLock Management ───────────────────────────────────────
@@ -864,11 +806,11 @@ class ConnectionManager private constructor(private val appContext: Context) {
 
         private suspend fun heartbeatLoop() {
             while (isRunning && scope.isActive) {
-                delay(4000L)
+                delay(5000L)
                 if (!isRunning || !scope.isActive) break
                 val now = System.currentTimeMillis()
-                if (now - lastPongTime > 22000L) {
-                    Log.w(tag, "[DIAG] [HEARTBEAT_TIMEOUT] Missed pongs for >22s from $deviceId, closing socket")
+                if (now - lastPongTime > 18000L) {
+                    Log.w(tag, "[DIAG] [HEARTBEAT_TIMEOUT] Missed pongs for >18s from $deviceId, closing socket")
                     close("heartbeat_timeout")
                     break
                 }

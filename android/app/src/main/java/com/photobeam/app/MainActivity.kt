@@ -18,6 +18,7 @@ import com.photobeam.app.ui.screens.HomeScreen
 import com.photobeam.app.ui.screens.ReceiveScreen
 import com.photobeam.app.ui.screens.SendScreen
 import com.photobeam.app.ui.screens.HistoryScreen
+import com.photobeam.app.ui.screens.MirrorScreen
 import com.photobeam.app.ui.screens.PairScreen
 import com.photobeam.app.ui.theme.PhotoBeamTheme
 
@@ -188,8 +189,10 @@ fun PhotoBeamApp(
                 onNavigateSend = { navController.navigate("send") },
                 onNavigatePair = { navController.navigate("pair") },
                 onNavigateHistory = { navController.navigate("history") },
-                onNavigateMirror = { _ ->
-                    // Screen mirror trigger
+                onNavigateMirror = { deviceId ->
+                    navController.navigate("mirror/$deviceId") {
+                        launchSingleTop = true
+                    }
                 }
             )
         }
@@ -217,6 +220,13 @@ fun PhotoBeamApp(
         }
         composable("history") {
             HistoryScreen(
+                onBack = { navigateBackOrHome() },
+            )
+        }
+        composable("mirror/{deviceId}") { backStackEntry ->
+            val deviceId = backStackEntry.arguments?.getString("deviceId") ?: ""
+            MirrorScreen(
+                deviceId = deviceId,
                 onBack = { navigateBackOrHome() },
             )
         }

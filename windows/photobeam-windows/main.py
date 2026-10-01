@@ -22,6 +22,13 @@ else:
     if win_dir not in sys.path:
         sys.path.insert(0, win_dir)
 
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
+
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QTimer
 from pathlib import Path
