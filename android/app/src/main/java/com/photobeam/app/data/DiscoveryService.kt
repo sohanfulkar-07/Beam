@@ -59,6 +59,7 @@ class DiscoveryService private constructor(private val context: Context) {
         private const val SERVICE_TYPE = "_photobeam._tcp."
         private const val MULTICAST_GROUP = "224.0.0.251"
         private const val DISCOVERY_PORT = 5353
+        private const val CONTROL_PORT = 47470
         private val MAGIC_HEADER = byteArrayOf(0x50, 0x42, 0x4D, 0x44) // PBMD
 
         @Volatile
@@ -137,7 +138,7 @@ class DiscoveryService private constructor(private val context: Context) {
         val serviceInfo = NsdServiceInfo().apply {
             serviceName = "PhotoBeam-${localIdentity.name}"
             serviceType = SERVICE_TYPE
-            port = 47474
+            port = CONTROL_PORT
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                 setAttribute("id", localIdentity.deviceId)
                 setAttribute("name", localIdentity.name)
@@ -218,7 +219,7 @@ class DiscoveryService private constructor(private val context: Context) {
             put("v", 1)
             put("id", id.deviceId)
             put("name", id.name)
-            put("port", 47474)
+            put("port", CONTROL_PORT)
             put("transports", JSONArray(listOf("wifi")))
             put("cert_fp", "")
             put("addrs", JSONArray(getLocalIpAddresses()))
@@ -331,7 +332,7 @@ class DiscoveryService private constructor(private val context: Context) {
             if (peerId == pm.getLocalIdentity().deviceId) return // Ignore self
 
             val name = obj.optString("name", "Unknown Peer")
-            val port = obj.optInt("port", 47474)
+            val port = obj.optInt("port", CONTROL_PORT)
             val certFp = obj.optString("cert_fp", "")
 
             val addrs = mutableListOf<String>()

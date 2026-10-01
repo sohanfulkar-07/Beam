@@ -1,5 +1,7 @@
 package com.photobeam.app.ui.screens
 
+import android.os.Handler
+import android.os.Looper
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -166,8 +168,16 @@ fun HomeScreen(
                             } else {
                                 connectionManager.connectDevice(
                                     deviceId = device.identity.deviceId,
-                                    onConnected = { Toast.makeText(context, "Connected to ${device.identity.name}", Toast.LENGTH_SHORT).show() },
-                                    onFailed = { err -> Toast.makeText(context, "Connection failed: $err", Toast.LENGTH_SHORT).show() }
+                                    onConnected = {
+                                        Handler(Looper.getMainLooper()).post {
+                                            Toast.makeText(context, "Connected to ${device.identity.name}", Toast.LENGTH_SHORT).show()
+                                        }
+                                    },
+                                    onFailed = { err ->
+                                        Handler(Looper.getMainLooper()).post {
+                                            Toast.makeText(context, "Connection failed: $err", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
                                 )
                             }
                         },
