@@ -152,6 +152,8 @@ class PairingDialog(QDialog):
     def _on_external_device_updated(self, device):
         if device.identity.trust_status.value == "trusted":
             self.status_label.setText(f"Paired with {device.identity.name}!")
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(1200, self.accept)
 
     def _generate_qr(self):
         local_id = self.pairing_manager.get_local_identity()
@@ -163,12 +165,14 @@ class PairingDialog(QDialog):
         token = base64.b64encode(os.urandom(24)).decode("ascii")
         exp = int(time.time()) + 1800  # 30 min expiry
 
+        self.connection_manager.set_active_pairing_token(token, 1800)
+
         self.current_payload = PairingPayload(
             v=PROTOCOL_VERSION,
             sid=str(os.urandom(16).hex()),
             rid=local_id.device_id,
             addrs=addrs,
-            port=47474,
+            port=47470,
             transports=["wifi", "usb"],
             token=token,
             exp=exp,

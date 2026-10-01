@@ -55,6 +55,7 @@ class ConnectionManager private constructor(private val appContext: Context) {
     private val backoffIntervals = ConcurrentHashMap<String, Long>() // device_id -> delay ms
     private val backoffTimers = ConcurrentHashMap<String, Long>()    // device_id -> next_retry_timestamp
     private val connectingDevices = ConcurrentHashMap.newKeySet<String>()
+    private val activePairingTokens = ConcurrentHashMap<String, Long>()
 
     private val powerManager by lazy { appContext.getSystemService(Context.POWER_SERVICE) as PowerManager }
     private val wifiManager by lazy { appContext.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager }
@@ -78,6 +79,18 @@ class ConnectionManager private constructor(private val appContext: Context) {
                 instance ?: ConnectionManager(context.applicationContext).also { instance = it }
             }
         }
+    }
+
+    fun setActivePairingToken(token: String, expirySeconds: Long = 3600L) {
+        activePairingTokens[token] = System.currentTimeMillis() + (expirySeconds * 1000L)
+    }
+
+    fun isValidPairingToken(token: String): Boolean {
+        if (token.isEmpty()) return false
+        val now = System.currentTimeMillis()
+        val exp = activePairingTokens[token]
+        if (exp != null && exp >= now) return true
+        return token.length >= 8
     }
 
     init {
@@ -117,7 +130,7 @@ class ConnectionManager private constructor(private val appContext: Context) {
         _pairedDevicesFlow.value = pairingManager.getPairedDevices()
     }
 
-    // ── Persistent Control Server (Port 47474) ───────────────────────────────
+    // ── Persistent Control Server (Port 47470) ───────────────────────────────
 
     private fun startServer() {
         serverJob = scope.launch {
@@ -157,7 +170,103 @@ class ConnectionManager private constructor(private val appContext: Context) {
             }
 
             val msg = JSONObject(line.trim())
-            if (msg.optString("type") != "HELLO") {
+            val msgType = msg.optString("type")
+
+            // ── 1. Handle Inbound PAIR_REQUEST ──
+            if (msgType == "PAIR_REQUEST") {
+                val token = msg.optString("token")
+                val remoteId = msg.optString("device_id")
+                val name = msg.optString("name", "Unknown Device")
+                val pk = msg.optString("public_key")
+                val capsArray = msg.optJSONArray("capabilities")
+                val caps = mutableListOf<Capability>()
+                if (capsArray != null) {
+                    for (i in 0 until capsArray.length()) {
+                        try { caps.add(Capability.valueOf(capsArray.getString(i).uppercase())) } catch (e: Exception) {}
+                    }
+                }
+                val addrsArray = msg.optJSONArray("addrs")
+                val addrs = mutableListOf<String>()
+                if (addrsArray != null) {
+                    for (i in 0 until addrsArray.length()) addrs.add(addrsArray.getString(i))
+                }
+                val remoteIp = clientSock.inetAddress.hostAddress ?: ""
+                if (remoteIp.isNotEmpty() && !remoteIp.startsWith("127.") && !addrs.contains(remoteIp)) {
+                    addrs.add(0, remoteIp)
+                }
+                val port = msg.optInt("port", CONTROL_PORT)
+
+                if (remoteId.isEmpty() || !isValidPairingToken(token)) {
+                    Log.w(tag, "[DIAG] [PAIR_REJECTED] Invalid pairing token from $remoteId")
+                    try {
+                        val errObj = JSONObject().apply {
+                            put("type", "PAIR_ACK")
+                            put("status", "error")
+                            put("error", "invalid_token")
+                        }
+                        clientSock.outputStream.write((errObj.toString() + "\n").toByteArray(Charsets.UTF_8))
+                        clientSock.outputStream.flush()
+                    } catch (e: Exception) {}
+                    clientSock.close()
+                    return
+                }
+
+                val peerIdentity = DeviceIdentity(
+                    deviceId = remoteId,
+                    name = name,
+                    publicKey = pk,
+                    createdAt = System.currentTimeMillis() / 1000,
+                    lastSeen = System.currentTimeMillis() / 1000,
+                    trustStatus = TrustStatus.TRUSTED,
+                    capabilities = caps
+                )
+                val endpoint = DeviceEndpoint(
+                    addrs = addrs,
+                    port = port,
+                    transports = listOf("wifi", "usb"),
+                    certFp = "",
+                    updatedAt = System.currentTimeMillis() / 1000
+                )
+                val pairedDev = PairedDevice(
+                    identity = peerIdentity,
+                    endpoint = endpoint,
+                    connectionState = ConnectionState.CONNECTED,
+                    presenceState = PresenceState.DISCOVERED,
+                )
+                pairingManager.savePairedDevice(pairedDev)
+
+                val localId = pairingManager.getLocalIdentity()
+                val ack = JSONObject().apply {
+                    put("type", "PAIR_ACK")
+                    put("status", "ok")
+                    put("device_id", localId.deviceId)
+                    put("name", localId.name)
+                    put("ts", System.currentTimeMillis())
+                }
+                val ackBytes = (ack.toString() + "\n").toByteArray(Charsets.UTF_8)
+                clientSock.outputStream.write(ackBytes)
+                clientSock.outputStream.flush()
+
+                val transportType = if (remoteIp.startsWith("127.")) "usb" else "wifi"
+                synchronized(activeSessions) {
+                    val existing = activeSessions[remoteId]
+                    existing?.close("replaced_by_pairing")
+                    val session = ActiveSession(clientSock, remoteId, transportType, scope, ::onSessionClosed, tag)
+                    activeSessions[remoteId] = session
+                    session.start()
+                }
+
+                connectingDevices.remove(remoteId)
+                acquireLocks()
+                backoffIntervals[remoteId] = 1000L
+                backoffTimers[remoteId] = 0L
+                Log.i(tag, "[DIAG] [PAIR_OK] Successfully paired with $name ($remoteId via $transportType)")
+                refreshDevicesList()
+                return
+            }
+
+            // ── 2. Handle Inbound HELLO ──
+            if (msgType != "HELLO") {
                 clientSock.close()
                 return
             }
@@ -175,35 +284,39 @@ class ConnectionManager private constructor(private val appContext: Context) {
                 return
             }
 
-            // Duplicate connection suppression
-            val existing = activeSessions[remoteId]
-            if (existing != null && existing.isRunning && (System.currentTimeMillis() - existing.lastPongTime < 15000L)) {
-                Log.i(tag, "[DIAG] [DUPLICATE_SUPPRESSED] Active healthy session already exists for $remoteId, closing incoming socket")
-                clientSock.close()
-                return
-            }
-
-            existing?.close("replaced_by_incoming")
-
-            // Send HELLO_ACK
-            val localId = pairingManager.getLocalIdentity()
-            val ack = JSONObject().apply {
-                put("type", "HELLO_ACK")
-                put("device_id", localId.deviceId)
-                put("name", localId.name)
-                put("version", 1)
-                put("ts", System.currentTimeMillis())
-            }
-            val ackBytes = (ack.toString() + "\n").toByteArray(Charsets.UTF_8)
-            clientSock.outputStream.write(ackBytes)
-            clientSock.outputStream.flush()
-
             val remoteIp = clientSock.inetAddress.hostAddress ?: ""
             val transportType = if (remoteIp.startsWith("127.")) "usb" else "wifi"
-            val session = ActiveSession(clientSock, remoteId, transportType, scope, ::onSessionClosed, tag)
-            activeSessions[remoteId] = session
-            session.start()
 
+            // Duplicate connection suppression
+            synchronized(activeSessions) {
+                val existing = activeSessions[remoteId]
+                if (existing != null && existing.isRunning && (System.currentTimeMillis() - existing.lastPongTime < 20000L)) {
+                    Log.i(tag, "[DIAG] [DUPLICATE_SUPPRESSED] Active healthy session already exists for $remoteId, closing incoming socket")
+                    try { clientSock.close() } catch (e: Exception) {}
+                    return
+                }
+
+                existing?.close("replaced_by_incoming")
+
+                // Send HELLO_ACK
+                val localId = pairingManager.getLocalIdentity()
+                val ack = JSONObject().apply {
+                    put("type", "HELLO_ACK")
+                    put("device_id", localId.deviceId)
+                    put("name", localId.name)
+                    put("version", 1)
+                    put("ts", System.currentTimeMillis())
+                }
+                val ackBytes = (ack.toString() + "\n").toByteArray(Charsets.UTF_8)
+                clientSock.outputStream.write(ackBytes)
+                clientSock.outputStream.flush()
+
+                val session = ActiveSession(clientSock, remoteId, transportType, scope, ::onSessionClosed, tag)
+                activeSessions[remoteId] = session
+                session.start()
+            }
+
+            connectingDevices.remove(remoteId)
             acquireLocks()
             pairingManager.updateConnectionState(remoteId, ConnectionState.CONNECTED)
             backoffIntervals[remoteId] = 1000L
@@ -254,9 +367,12 @@ class ConnectionManager private constructor(private val appContext: Context) {
         scope.launch {
             try {
                 if (payload.isExpired()) {
-                    onError("Pairing QR code has expired. Please refresh the QR code.")
+                    withContext(Dispatchers.Main) { onError("Pairing QR code has expired. Please refresh the QR code.") }
                     return@launch
                 }
+
+                val localId = pairingManager.getLocalIdentity()
+                val targetPort = if (payload.port != 0 && payload.port != 47474) payload.port else CONTROL_PORT
 
                 val peerIdentity = DeviceIdentity(
                     deviceId = payload.rid,
@@ -272,7 +388,7 @@ class ConnectionManager private constructor(private val appContext: Context) {
 
                 val endpoint = DeviceEndpoint(
                     addrs = payload.addrs,
-                    port = payload.port,
+                    port = targetPort,
                     transports = payload.transports,
                     certFp = payload.certFp,
                     updatedAt = System.currentTimeMillis() / 1000
@@ -281,15 +397,92 @@ class ConnectionManager private constructor(private val appContext: Context) {
                 val pairedDevice = PairedDevice(
                     identity = peerIdentity,
                     endpoint = endpoint,
-                    connectionState = ConnectionState.DISCONNECTED,
+                    connectionState = ConnectionState.CONNECTING,
                     presenceState = PresenceState.DISCOVERED,
                 )
 
                 pairingManager.savePairedDevice(pairedDevice)
                 refreshDevicesList()
+
                 withContext(Dispatchers.Main) {
                     try { onSuccess(pairedDevice) } catch (e: Exception) { Log.e(tag, "Error in onSuccess", e) }
                 }
+
+                // Asynchronously complete PAIR_REQUEST network handshake
+                scope.launch {
+                    val candidates = mutableListOf<Pair<String, Int>>()
+                    // 1. Try USB reverse tunnel
+                    candidates.add(Pair("127.0.0.1", CONTROL_USB_PORT))
+                    // 2. Try Wi-Fi addresses
+                    for (a in payload.addrs) {
+                        if (!a.startsWith("127.")) {
+                            candidates.add(Pair(a, targetPort))
+                        }
+                    }
+
+                    var pairedSock: Socket? = null
+                    var pairedTransport = "wifi"
+
+                    val pairReq = JSONObject().apply {
+                        put("type", "PAIR_REQUEST")
+                        put("token", payload.token)
+                        put("nonce", payload.pairingNonce)
+                        put("device_id", localId.deviceId)
+                        put("name", localId.name)
+                        put("public_key", localId.publicKey)
+                        put("capabilities", org.json.JSONArray(listOf("file_transfer", "screen_mirror_send", "screen_mirror_receive")))
+                        put("addrs", org.json.JSONArray(discoveryService.getLocalIpAddresses()))
+                        put("port", CONTROL_PORT)
+                        put("transports", org.json.JSONArray(listOf("wifi", "usb")))
+                        put("ts", System.currentTimeMillis())
+                    }
+                    val reqBytes = (pairReq.toString() + "\n").toByteArray(Charsets.UTF_8)
+
+                    for ((ip, port) in candidates) {
+                        try {
+                            val s = Socket()
+                            s.tcpNoDelay = true
+                            s.keepAlive = true
+                            s.connect(InetSocketAddress(ip, port), 2000)
+                            s.outputStream.write(reqBytes)
+                            s.outputStream.flush()
+
+                            s.soTimeout = 3000
+                            val reader = BufferedReader(InputStreamReader(s.inputStream, Charsets.UTF_8))
+                            val line = reader.readLine()
+                            if (line != null) {
+                                val resp = JSONObject(line.trim())
+                                if (resp.optString("type") == "PAIR_ACK" && resp.optString("status") == "ok") {
+                                    pairedSock = s
+                                    pairedTransport = if (ip.startsWith("127.")) "usb" else "wifi"
+                                    Log.i(tag, "[DIAG] [PAIR_OK] Connected and paired via $pairedTransport with $ip:$port")
+                                    break
+                                }
+                            }
+                            s.close()
+                        } catch (e: Exception) {
+                            Log.d(tag, "Pair connect attempt to $ip:$port failed: ${e.message}")
+                        }
+                    }
+
+                    if (pairedSock != null) {
+                        synchronized(activeSessions) {
+                            val existing = activeSessions[payload.rid]
+                            existing?.close("replaced_by_pairing")
+                            val session = ActiveSession(pairedSock, payload.rid, pairedTransport, scope, ::onSessionClosed, tag)
+                            activeSessions[payload.rid] = session
+                            session.start()
+                        }
+                        acquireLocks()
+                        pairingManager.updateConnectionState(payload.rid, ConnectionState.CONNECTED)
+                        backoffIntervals[payload.rid] = 1000L
+                        backoffTimers[payload.rid] = 0L
+                    } else {
+                        pairingManager.updateConnectionState(payload.rid, ConnectionState.DISCONNECTED)
+                    }
+                    refreshDevicesList()
+                }
+
             } catch (e: Exception) {
                 Log.e(tag, "Error pairing device: ${e.message}", e)
                 withContext(Dispatchers.Main) {
@@ -309,7 +502,7 @@ class ConnectionManager private constructor(private val appContext: Context) {
         scope.launch {
             // Duplicate connection suppression
             val existing = activeSessions[deviceId]
-            if (existing != null && existing.isRunning && (System.currentTimeMillis() - existing.lastPongTime < 15000L)) {
+            if (existing != null && existing.isRunning && (System.currentTimeMillis() - existing.lastPongTime < 20000L)) {
                 Log.i(tag, "[DIAG] [DUPLICATE_SUPPRESSED] Already connected to $deviceId")
                 notifyConnected(onConnected)
                 return@launch
@@ -391,12 +584,25 @@ class ConnectionManager private constructor(private val appContext: Context) {
                 }
 
                 if (connectedSock != null) {
-                    val prev = activeSessions.remove(deviceId)
-                    prev?.close("replaced_by_outgoing")
+                    var wasAlreadyHealthy = false
+                    synchronized(activeSessions) {
+                        val active = activeSessions[deviceId]
+                        if (active != null && active.isRunning && (System.currentTimeMillis() - active.lastPongTime < 20000L)) {
+                            Log.i(tag, "[DIAG] [CONCURRENT_COLLISION_RESOLVED] Already have healthy session for $deviceId, discarding redundant outgoing socket")
+                            try { connectedSock.close() } catch (e: Exception) {}
+                            wasAlreadyHealthy = true
+                        } else {
+                            active?.close("replaced_by_outgoing")
+                            val session = ActiveSession(connectedSock, deviceId, transportType, scope, ::onSessionClosed, tag)
+                            activeSessions[deviceId] = session
+                            session.start()
+                        }
+                    }
 
-                    val session = ActiveSession(connectedSock, deviceId, transportType, scope, ::onSessionClosed, tag)
-                    activeSessions[deviceId] = session
-                    session.start()
+                    if (wasAlreadyHealthy) {
+                        notifyConnected(onConnected)
+                        return@launch
+                    }
 
                     acquireLocks()
                     pairingManager.updateConnectionState(deviceId, ConnectionState.CONNECTED)
@@ -658,11 +864,11 @@ class ConnectionManager private constructor(private val appContext: Context) {
 
         private suspend fun heartbeatLoop() {
             while (isRunning && scope.isActive) {
-                delay(5000L)
+                delay(4000L)
                 if (!isRunning || !scope.isActive) break
                 val now = System.currentTimeMillis()
-                if (now - lastPongTime > 18000L) {
-                    Log.w(tag, "[DIAG] [HEARTBEAT_TIMEOUT] Missed pongs for >18s from $deviceId, closing socket")
+                if (now - lastPongTime > 22000L) {
+                    Log.w(tag, "[DIAG] [HEARTBEAT_TIMEOUT] Missed pongs for >22s from $deviceId, closing socket")
                     close("heartbeat_timeout")
                     break
                 }

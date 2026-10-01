@@ -109,24 +109,40 @@ class DiscoveryService private constructor(private val context: Context) {
         Log.i(tag, "DiscoveryService stopped")
     }
 
-    private fun getLocalIpAddresses(): List<String> {
-        val ips = mutableListOf<String>()
+    fun getLocalIpAddresses(): List<String> {
+        val lanIps = mutableListOf<String>()
+        val otherIps = mutableListOf<String>()
         try {
             val interfaces = Collections.list(NetworkInterface.getNetworkInterfaces())
             for (intf in interfaces) {
                 if (intf.isLoopback || !intf.isUp) continue
+                val name = intf.name.lowercase()
+                // Skip virtual/cellular tunnel interfaces
+                if (name.startsWith("dummy") || name.startsWith("vgate") ||
+                    name.startsWith("ccmni") || name.startsWith("rmnet") ||
+                    name.startsWith("sit") || name.startsWith("tun")) {
+                    continue
+                }
                 val addrs = Collections.list(intf.inetAddresses)
                 for (addr in addrs) {
                     if (!addr.isLoopbackAddress && addr is java.net.Inet4Address) {
-                        ips.add(addr.hostAddress)
+                        val host = addr.hostAddress ?: continue
+                        if (host.startsWith("10.") || host.startsWith("192.168.") || host.startsWith("172.")) {
+                            lanIps.add(host)
+                        } else {
+                            otherIps.add(host)
+                        }
                     }
                 }
             }
         } catch (e: Exception) {
             Log.w(tag, "Error getting IP addresses: ${e.message}")
         }
-        if (ips.isEmpty()) ips.add("127.0.0.1")
-        return ips
+        val result = mutableListOf<String>()
+        result.addAll(lanIps)
+        result.addAll(otherIps)
+        if (result.isEmpty()) result.add("127.0.0.1")
+        return result
     }
 
     // ── NSD Implementation ───────────────────────────────────────────────────
@@ -302,6 +318,23 @@ class DiscoveryService private constructor(private val context: Context) {
                 val bcastAddr = InetAddress.getByName("255.255.255.255")
                 val bPacket = DatagramPacket(packetData, packetData.size, bcastAddr, DISCOVERY_PORT)
                 socket.send(bPacket)
+            } catch (e: Exception) {}
+
+            // Send to all interface-specific broadcast addresses (especially Hotspot ap0)
+            try {
+                val interfaces = Collections.list(NetworkInterface.getNetworkInterfaces())
+                for (intf in interfaces) {
+                    if (intf.isLoopback || !intf.isUp) continue
+                    for (ifaceAddr in intf.interfaceAddresses) {
+                        val bcast = ifaceAddr.broadcast
+                        if (bcast != null) {
+                            try {
+                                val p = DatagramPacket(packetData, packetData.size, bcast, DISCOVERY_PORT)
+                                socket.send(p)
+                            } catch (e: Exception) {}
+                        }
+                    }
+                }
             } catch (e: Exception) {}
 
             socket.close()

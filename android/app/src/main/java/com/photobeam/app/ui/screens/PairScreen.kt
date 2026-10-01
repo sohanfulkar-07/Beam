@@ -25,9 +25,11 @@ import androidx.compose.ui.unit.sp
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.qrcode.QRCodeWriter
 import com.photobeam.app.data.ConnectionManager
+import com.photobeam.app.data.DiscoveryService
 import com.photobeam.app.data.PairingManager
 import com.photobeam.app.protocol.PROTOCOL_VERSION
 import com.photobeam.app.protocol.PairingPayload
+import com.photobeam.app.protocol.TrustStatus
 import com.photobeam.app.protocol.decodePairingPayload
 import com.photobeam.app.protocol.encodePairingPayload
 import com.photobeam.app.ui.components.TactileBadge
@@ -55,8 +57,20 @@ fun PairScreen(
     val connectionManager = remember { ConnectionManager.getInstance(context) }
     val pairingManager = remember { PairingManager.getInstance(context) }
 
+    val pairedDevices by connectionManager.pairedDevicesFlow.collectAsState()
+    val initialPairedCount = remember { pairedDevices.count { it.identity.trustStatus == TrustStatus.TRUSTED } }
+
     var selectedTab by remember { mutableStateOf(0) } // 0 = Scan, 1 = Show My QR
     var uiState by remember { mutableStateOf<PairUiState>(PairUiState.Ready) }
+
+    // Auto-detect when remote peer pairs with this device via Show My QR
+    LaunchedEffect(pairedDevices) {
+        val currentTrusted = pairedDevices.firstOrNull { it.identity.trustStatus == TrustStatus.TRUSTED }
+        if (selectedTab == 1 && pairedDevices.count { it.identity.trustStatus == TrustStatus.TRUSTED } > initialPairedCount && currentTrusted != null) {
+            uiState = PairUiState.Success(currentTrusted.identity.name)
+            Toast.makeText(context, "Successfully paired with ${currentTrusted.identity.name}!", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
 
@@ -302,14 +316,17 @@ fun PairScreen(
             val localIdentity = remember { pairingManager.getLocalIdentity() }
             val qrBitmap = remember {
                 val nonce = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(32) { 0x07 })
+                val discovery = DiscoveryService.getInstance(context)
+                val token = UUID.randomUUID().toString()
+                connectionManager.setActivePairingToken(token)
                 val payload = PairingPayload(
                     v = PROTOCOL_VERSION,
                     sid = UUID.randomUUID().toString(),
                     rid = localIdentity.deviceId,
-                    addrs = listOf("127.0.0.1"),
-                    port = 47474,
+                    addrs = discovery.getLocalIpAddresses(),
+                    port = ConnectionManager.CONTROL_PORT,
                     transports = listOf("wifi", "usb"),
-                    token = UUID.randomUUID().toString(),
+                    token = token,
                     exp = (System.currentTimeMillis() / 1000) + 1800,
                     certFp = "",
                     deviceName = localIdentity.name,

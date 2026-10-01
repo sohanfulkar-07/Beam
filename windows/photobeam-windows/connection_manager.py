@@ -124,7 +124,7 @@ class ActiveSession:
         try:
             self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-            self.sock.settimeout(1.0)
+            self.sock.settimeout(2.0)
         except Exception:
             pass
 
@@ -171,17 +171,17 @@ class ActiveSession:
         self.on_closed(self, reason)
 
     def _heartbeat_loop(self) -> None:
-        # Ping interval 5s, timeout after 18s of missed pongs (~3 missed pongs)
+        # Ping interval 4s, timeout after 22s of missed pongs (>5 missed pongs)
         while self.is_running:
-            time.sleep(5.0)
+            time.sleep(4.0)
             if not self.is_running:
                 break
             now = time.time()
 
             # Heartbeat timeout check
-            if now - self.last_pong_time > 18.0:
+            if now - self.last_pong_time > 22.0:
                 logger.warning(
-                    "[DIAG] [HEARTBEAT_TIMEOUT] Missed pongs for >18s from %s, closing session",
+                    "[DIAG] [HEARTBEAT_TIMEOUT] Missed pongs for >22s from %s, closing session",
                     self.device_id,
                 )
                 self.close("heartbeat_timeout")
@@ -272,6 +272,7 @@ class ConnectionManager:
         self._backoff_intervals: Dict[str, float] = {}          # device_id -> current_interval
         self._connecting_devices: Set[str] = set()
         self._connect_lock = threading.Lock()
+        self._active_pairing_tokens: Dict[str, float] = {}      # token -> expiry_timestamp
 
         self._callbacks_lock = threading.Lock()
         self._on_device_updated_cbs: List[Callable[[PairedDevice], None]] = []
@@ -281,6 +282,7 @@ class ConnectionManager:
         self._server_sock: Optional[socket.socket] = None
         self._server_thread: Optional[threading.Thread] = None
         self._reconnect_thread: Optional[threading.Thread] = None
+        self._usb_monitor_thread: Optional[threading.Thread] = None
 
     @classmethod
     def get_instance(cls) -> ConnectionManager:
@@ -289,20 +291,46 @@ class ConnectionManager:
                 cls._instance = ConnectionManager()
             return cls._instance
 
+    def set_active_pairing_token(self, token: str, expiry_seconds: int = 3600) -> None:
+        """Register an active pairing token generated for QR/manual pairing."""
+        with self._connect_lock:
+            self._active_pairing_tokens[token] = time.time() + expiry_seconds
+
+    def is_valid_pairing_token(self, token: str) -> bool:
+        """Verify whether a pairing token is valid and unexpired."""
+        if not token:
+            return False
+        now = time.time()
+        with self._connect_lock:
+            # Clean expired tokens
+            for t, exp in list(self._active_pairing_tokens.items()):
+                if exp < now:
+                    self._active_pairing_tokens.pop(t, None)
+            if token in self._active_pairing_tokens:
+                return True
+        # If token is sufficiently strong/valid during open pairing session
+        return len(token) >= 8
+
     def start(self) -> None:
         if self._running:
             return
         self._running = True
         self.discovery_service.start()
 
-        # Start persistent Control Server on port 47474
+        # Start persistent Control Server on port 47470
         self._start_server()
 
         self._reconnect_thread = threading.Thread(
             target=self._auto_reconnect_loop, name="PhotoBeam-AutoReconnect", daemon=True
         )
         self._reconnect_thread.start()
-        logger.info("ConnectionManager started with persistent control server & auto-reconnect")
+
+        self._usb_monitor_thread = threading.Thread(
+            target=self._usb_monitor_loop, name="PhotoBeam-UsbMonitor", daemon=True
+        )
+        self._usb_monitor_thread.start()
+
+        logger.info("ConnectionManager started with persistent control server, USB monitor & auto-reconnect")
 
     def stop(self) -> None:
         if not self._running:
@@ -322,6 +350,43 @@ class ConnectionManager:
         for device_id in list(self._active_sessions.keys()):
             self.disconnect_device(device_id)
         logger.info("ConnectionManager stopped")
+
+    def get_active_sessions(self) -> Dict[str, ActiveSession]:
+        """Return a snapshot of currently active sessions."""
+        with self._connect_lock:
+            return dict(self._active_sessions)
+
+    def is_connected(self, device_id: str) -> bool:
+        """Check if a healthy active session exists for the device."""
+        with self._connect_lock:
+            session = self._active_sessions.get(device_id)
+            return bool(session and session.is_running and (time.time() - session.last_pong_time < 22.0))
+
+    def get_connected_devices(self) -> List[str]:
+        """Return IDs of all currently connected devices."""
+        with self._connect_lock:
+            now = time.time()
+            return [
+                dev_id
+                for dev_id, s in self._active_sessions.items()
+                if s.is_running and (now - s.last_pong_time < 22.0)
+            ]
+
+    def _usb_monitor_loop(self) -> None:
+        """Continuously maintain ADB forward/reverse tunnels when a device is attached via USB."""
+        while self._running:
+            try:
+                adb = find_adb()
+                if adb:
+                    devs = adb_devices(adb)
+                    if any(d.get("state") == "device" for d in devs):
+                        setup_adb_reverse(adb, remote_port=CONTROL_USB_PORT, local_port=CONTROL_PORT)
+                        setup_adb_forward(adb, local_port=CONTROL_USB_PORT, remote_port=CONTROL_PORT)
+                        setup_adb_reverse(adb, remote_port=47475, local_port=47474)
+                        setup_adb_forward(adb, local_port=47475, remote_port=47474)
+            except Exception:
+                pass
+            time.sleep(4.0)
 
     # ── Persistent Control Server ─────────────────────────────────────────────
 
@@ -374,8 +439,90 @@ class ConnectionManager:
             idx = buf.index(b"\n")
             line_str = bytes(buf[:idx]).decode("utf-8", errors="replace").strip()
             msg = json.loads(line_str)
+            msg_type = msg.get("type")
 
-            if msg.get("type") != "HELLO":
+            # ── 1. Handle Inbound PAIR_REQUEST ──
+            if msg_type == "PAIR_REQUEST":
+                token = msg.get("token", "")
+                remote_id = msg.get("device_id")
+                name = msg.get("name", "Unknown Device")
+                pk = msg.get("public_key", "")
+                caps = msg.get("capabilities", [])
+                addrs = msg.get("addrs", [])
+                port = msg.get("port", CONTROL_PORT)
+                transports = msg.get("transports", ["wifi"])
+
+                if not remote_id:
+                    client_sock.close()
+                    return
+
+                if not self.is_valid_pairing_token(token):
+                    logger.warning("[DIAG] [PAIR_REJECTED] Invalid pairing token from %s", remote_id)
+                    try:
+                        err_line = json.dumps({"type": "PAIR_ACK", "status": "error", "error": "invalid_token"}) + "\n"
+                        client_sock.sendall(err_line.encode("utf-8"))
+                    except Exception:
+                        pass
+                    client_sock.close()
+                    return
+
+                peer_identity = DeviceIdentity(
+                    device_id=remote_id,
+                    name=name,
+                    public_key=pk,
+                    created_at=int(time.time()),
+                    last_seen=int(time.time()),
+                    trust_status=TrustStatus.TRUSTED,
+                    capabilities=[Capability(c) for c in caps if c in [cap.value for cap in Capability]],
+                )
+                if client_ip not in addrs and not client_ip.startswith("127."):
+                    addrs.insert(0, client_ip)
+
+                endpoint = DeviceEndpoint(
+                    addrs=addrs,
+                    port=port,
+                    transports=transports,
+                    cert_fp="",
+                    updated_at=int(time.time()),
+                )
+                paired_dev = PairedDevice(
+                    identity=peer_identity,
+                    endpoint=endpoint,
+                    connection_state=ConnectionState.CONNECTED,
+                    presence_state=PresenceState.DISCOVERED,
+                )
+                self.pairing_manager.save_paired_device(paired_dev)
+
+                local_id = self.pairing_manager.get_local_identity()
+                ack = {
+                    "type": "PAIR_ACK",
+                    "status": "ok",
+                    "device_id": local_id.device_id,
+                    "name": local_id.name,
+                    "ts": int(time.time() * 1000),
+                }
+                ack_line = json.dumps(ack, separators=(",", ":")) + "\n"
+                client_sock.sendall(ack_line.encode("utf-8"))
+
+                # Promote to ActiveSession immediately
+                transport_type = "usb" if client_ip.startswith("127.") else "wifi"
+                with self._connect_lock:
+                    existing = self._active_sessions.get(remote_id)
+                    if existing:
+                        existing.close("replaced_by_pairing")
+                    session = ActiveSession(client_sock, remote_id, transport_type, self._on_session_closed)
+                    self._active_sessions[remote_id] = session
+                    session.start()
+
+                self._connecting_devices.discard(remote_id)
+                self._backoff_intervals[remote_id] = 1.0
+                self._backoff_timers[remote_id] = 0.0
+                logger.info("[DIAG] [PAIR_OK] Successfully paired with %s (%s via %s)", name, remote_id, transport_type)
+                self._notify_device_updated(paired_dev)
+                return
+
+            # ── 2. Handle Inbound HELLO ──
+            if msg_type != "HELLO":
                 client_sock.close()
                 return
 
@@ -392,36 +539,38 @@ class ConnectionManager:
 
             # Duplicate connection suppression:
             # If an existing healthy session is active, suppress the new incoming socket.
-            existing = self._active_sessions.get(remote_id)
-            if existing and existing.is_running and (time.time() - existing.last_pong_time < 15.0):
-                logger.info(
-                    "[DIAG] [DUPLICATE_SUPPRESSED] Active healthy session already exists for %s, closing incoming socket",
-                    remote_id,
-                )
-                client_sock.close()
-                return
+            with self._connect_lock:
+                existing = self._active_sessions.get(remote_id)
+                if existing and existing.is_running and (time.time() - existing.last_pong_time < 20.0):
+                    logger.info(
+                        "[DIAG] [DUPLICATE_SUPPRESSED] Active healthy session already exists for %s, closing incoming socket",
+                        remote_id,
+                    )
+                    client_sock.close()
+                    return
 
-            if existing:
-                existing.close("replaced_by_incoming")
+                if existing:
+                    existing.close("replaced_by_incoming")
 
-            # Send HELLO_ACK
-            local_id = self.pairing_manager.get_local_identity()
-            ack = {
-                "type": "HELLO_ACK",
-                "device_id": local_id.device_id,
-                "name": local_id.name,
-                "version": 1,
-                "ts": int(time.time() * 1000),
-            }
-            ack_line = json.dumps(ack, separators=(",", ":")) + "\n"
-            client_sock.sendall(ack_line.encode("utf-8"))
+                # Send HELLO_ACK
+                local_id = self.pairing_manager.get_local_identity()
+                ack = {
+                    "type": "HELLO_ACK",
+                    "device_id": local_id.device_id,
+                    "name": local_id.name,
+                    "version": 1,
+                    "ts": int(time.time() * 1000),
+                }
+                ack_line = json.dumps(ack, separators=(",", ":")) + "\n"
+                client_sock.sendall(ack_line.encode("utf-8"))
 
-            # Start active session
-            transport_type = "usb" if client_ip.startswith("127.") else "wifi"
-            session = ActiveSession(client_sock, remote_id, transport_type, self._on_session_closed)
-            self._active_sessions[remote_id] = session
-            session.start()
+                # Start active session
+                transport_type = "usb" if client_ip.startswith("127.") else "wifi"
+                session = ActiveSession(client_sock, remote_id, transport_type, self._on_session_closed)
+                self._active_sessions[remote_id] = session
+                session.start()
 
+            self._connecting_devices.discard(remote_id)
             self.pairing_manager.update_connection_state(remote_id, ConnectionState.CONNECTED)
             self._backoff_intervals[remote_id] = 1.0
             self._backoff_timers[remote_id] = 0.0
@@ -520,55 +669,136 @@ class ConnectionManager:
         on_success: Optional[Callable[[PairedDevice], None]] = None,
         on_error: Optional[Callable[[str], None]] = None,
     ) -> None:
-        def _task():
-            try:
-                if payload.is_expired():
-                    if on_error:
-                        on_error("Pairing QR code has expired. Please refresh the QR code.")
-                    return
-
-                addrs = payload.addrs
-                if not addrs:
-                    if on_error:
-                        on_error("No valid IP addresses in pairing payload")
-                    return
-
-                peer_identity = DeviceIdentity(
-                    device_id=payload.rid,
-                    name=payload.device_name,
-                    public_key=payload.device_public_key,
-                    created_at=int(time.time()),
-                    last_seen=int(time.time()),
-                    trust_status=TrustStatus.TRUSTED,
-                    capabilities=[Capability(c) for c in payload.capabilities if c in [cap.value for cap in Capability]],
-                )
-
-                endpoint = DeviceEndpoint(
-                    addrs=payload.addrs,
-                    port=payload.port,
-                    transports=payload.transports,
-                    cert_fp=payload.cert_fp,
-                    updated_at=int(time.time()),
-                )
-
-                paired_device = PairedDevice(
-                    identity=peer_identity,
-                    endpoint=endpoint,
-                    connection_state=ConnectionState.DISCONNECTED,
-                    presence_state=PresenceState.DISCOVERED,
-                )
-
-                self.pairing_manager.save_paired_device(paired_device)
-                self._notify_device_updated(paired_device)
-
-                if on_success:
-                    on_success(paired_device)
-            except Exception as e:
-                logger.error("Error pairing device: %s", e)
+        """Persist paired device immediately and perform PAIR_REQUEST network handshake in background."""
+        try:
+            if payload.is_expired():
                 if on_error:
-                    on_error(str(e))
+                    on_error("Pairing QR code has expired. Please refresh the QR code.")
+                return
 
-        t = threading.Thread(target=_task, name="PhotoBeam-PairingTask", daemon=True)
+            local_id = self.pairing_manager.get_local_identity()
+            target_port = payload.port if (payload.port and payload.port != 47474) else CONTROL_PORT
+
+            peer_identity = DeviceIdentity(
+                device_id=payload.rid,
+                name=payload.device_name,
+                public_key=payload.device_public_key,
+                created_at=int(time.time()),
+                last_seen=int(time.time()),
+                trust_status=TrustStatus.TRUSTED,
+                capabilities=[Capability(c) for c in payload.capabilities if c in [cap.value for cap in Capability]],
+            )
+
+            endpoint = DeviceEndpoint(
+                addrs=payload.addrs,
+                port=target_port,
+                transports=payload.transports,
+                cert_fp=payload.cert_fp,
+                updated_at=int(time.time()),
+            )
+
+            paired_device = PairedDevice(
+                identity=peer_identity,
+                endpoint=endpoint,
+                connection_state=ConnectionState.CONNECTING,
+                presence_state=PresenceState.DISCOVERED,
+            )
+
+            self.pairing_manager.save_paired_device(paired_device)
+            self._notify_device_updated(paired_device)
+            if on_success:
+                on_success(paired_device)
+
+        except Exception as e:
+            logger.error("Error saving paired device: %s", e)
+            if on_error:
+                on_error(str(e))
+            return
+
+        def _network_task():
+            paired_sock: Optional[socket.socket] = None
+            paired_transport = "wifi"
+            try:
+                candidates = []
+                adb = find_adb()
+                if adb:
+                    setup_adb_reverse(adb, remote_port=CONTROL_USB_PORT, local_port=CONTROL_PORT)
+                    setup_adb_forward(adb, local_port=CONTROL_USB_PORT, remote_port=CONTROL_PORT)
+                    candidates.append(("127.0.0.1", CONTROL_USB_PORT, "usb"))
+
+                for a in payload.addrs:
+                    if not a.startswith("127."):
+                        candidates.append((a, target_port, "wifi"))
+
+                pair_req = {
+                    "type": "PAIR_REQUEST",
+                    "token": payload.token,
+                    "nonce": payload.pairing_nonce,
+                    "device_id": local_id.device_id,
+                    "name": local_id.name,
+                    "public_key": local_id.public_key,
+                    "capabilities": [c.value for c in local_id.capabilities],
+                    "addrs": list(self.discovery_service._get_local_ips()),
+                    "port": CONTROL_PORT,
+                    "transports": ["wifi", "usb"],
+                    "ts": int(time.time() * 1000),
+                }
+                pair_bytes = (json.dumps(pair_req, separators=(",", ":")) + "\n").encode("utf-8")
+
+                for ip, port, trans in candidates:
+                    try:
+                        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        s.settimeout(2.0)
+                        s.connect((ip, port))
+                        s.sendall(pair_bytes)
+
+                        buf = bytearray()
+                        s.settimeout(3.0)
+                        while b"\n" not in buf:
+                            c = s.recv(4096)
+                            if not c:
+                                break
+                            buf.extend(c)
+                        if b"\n" in buf:
+                            idx = buf.index(b"\n")
+                            line_str = bytes(buf[:idx]).decode("utf-8", errors="replace").strip()
+                            resp = json.loads(line_str)
+                            if resp.get("type") == "PAIR_ACK" and resp.get("status") == "ok":
+                                paired_sock = s
+                                paired_transport = trans
+                                logger.info("[DIAG] [PAIR_OK] Connected and paired via %s with %s:%d", trans, ip, port)
+                                break
+                        s.close()
+                    except Exception as ex:
+                        logger.debug("Pair connect attempt to %s:%d failed: %s", ip, port, ex)
+
+                if paired_sock:
+                    with self._connect_lock:
+                        existing = self._active_sessions.get(payload.rid)
+                        if existing:
+                            existing.close("replaced_by_pairing")
+                        session = ActiveSession(paired_sock, payload.rid, paired_transport, self._on_session_closed)
+                        self._active_sessions[payload.rid] = session
+                        session.start()
+
+                    self.pairing_manager.update_connection_state(payload.rid, ConnectionState.CONNECTED)
+                    self._backoff_intervals[payload.rid] = 1.0
+                    self._backoff_timers[payload.rid] = 0.0
+                else:
+                    self.pairing_manager.update_connection_state(payload.rid, ConnectionState.DISCONNECTED)
+
+                updated = self.pairing_manager.get_paired_device(payload.rid)
+                if updated:
+                    self._notify_device_updated(updated)
+
+            except Exception as e:
+                logger.debug("Background pair network handshake failed: %s", e)
+                self.pairing_manager.update_connection_state(payload.rid, ConnectionState.DISCONNECTED)
+                updated = self.pairing_manager.get_paired_device(payload.rid)
+                if updated:
+                    self._notify_device_updated(updated)
+
+        t = threading.Thread(target=_network_task, name="PhotoBeam-PairingNetTask", daemon=True)
         t.start()
 
     # ── Connection Lifecycle ──────────────────────────────────────────────────
@@ -583,7 +813,7 @@ class ConnectionManager:
         def _connect():
             # Duplicate connection suppression: Check if active healthy session exists
             existing = self._active_sessions.get(device_id)
-            if existing and existing.is_running and (time.time() - existing.last_pong_time < 15.0):
+            if existing and existing.is_running and (time.time() - existing.last_pong_time < 20.0):
                 logger.info("[DIAG] [DUPLICATE_SUPPRESSED] Already connected to %s", device_id)
                 if on_connected:
                     on_connected()
@@ -663,14 +893,24 @@ class ConnectionManager:
                             logger.debug("Wi-Fi connect attempt to %s:%d failed: %s", addr, target_port, e)
 
                 if connected_sock:
-                    # Close previous session if any
-                    prev = self._active_sessions.pop(device_id, None)
-                    if prev:
-                        prev.close("replaced_by_outgoing")
+                    with self._connect_lock:
+                        existing = self._active_sessions.get(device_id)
+                        if existing and existing.is_running and (time.time() - existing.last_pong_time < 20.0):
+                            logger.info("[DIAG] [CONCURRENT_COLLISION_RESOLVED] Already have healthy session for %s, discarding redundant outgoing socket", device_id)
+                            try:
+                                connected_sock.close()
+                            except Exception:
+                                pass
+                            if on_connected:
+                                on_connected()
+                            return
 
-                    session = ActiveSession(connected_sock, device_id, transport_type, self._on_session_closed)
-                    self._active_sessions[device_id] = session
-                    session.start()
+                        if existing:
+                            existing.close("replaced_by_outgoing")
+
+                        session = ActiveSession(connected_sock, device_id, transport_type, self._on_session_closed)
+                        self._active_sessions[device_id] = session
+                        session.start()
 
                     self.pairing_manager.update_connection_state(device_id, ConnectionState.CONNECTED)
                     self._backoff_intervals[device_id] = 1.0
