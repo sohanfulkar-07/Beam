@@ -4,6 +4,8 @@ import android.content.Context
 import android.graphics.Bitmap
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -26,6 +28,7 @@ import com.photobeam.app.transport.TlsUtils
 import com.photobeam.app.transport.WiFiTransport
 import com.photobeam.app.ui.FriendlyError
 import com.photobeam.app.ui.FriendlyErrorCard
+import com.photobeam.app.ui.components.*
 import com.photobeam.app.ui.theme.*
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.qrcode.QRCodeWriter
@@ -63,13 +66,14 @@ fun ReceiveScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Background),
+            .background(AppBackgroundBrush),
     ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .statusBarsPadding()
-                .padding(24.dp),
+                .navigationBarsPadding()
+                .padding(horizontal = 20.dp, vertical = 14.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             // ── Top Bar ───────────────────────────────────────────────────────
@@ -78,25 +82,46 @@ fun ReceiveScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                TextButton(onClick = { receiverJob?.cancel(); onBack() }) {
-                    Text("← Back", color = OnSurfaceVariant)
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(SurfaceElevated)
+                        .border(1.dp, CardBorderSubtle, RoundedCornerShape(12.dp))
+                        .clickable(onClick = { receiverJob?.cancel(); onBack() }),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text("←", fontSize = 20.sp, color = OnBackground)
                 }
 
-                TextButton(onClick = onNavigateHistory) {
-                    Text("📜 History", color = OnSurfaceVariant)
-                }
+                TactilePillButton(
+                    text = "📜 History",
+                    active = false,
+                    onClick = onNavigateHistory,
+                    minHeight = 36.dp
+                )
             }
 
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(14.dp))
 
-            Text("📥 Receive Files", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = OnBackground)
-            Spacer(Modifier.height(20.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TactileGlowRing(size = 38.dp, ringColor = CyanAccent) {
+                    Text("📥", fontSize = 18.sp)
+                }
+                Spacer(Modifier.width(12.dp))
+                Column {
+                    Text("Receive Files", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = OnBackground)
+                    Text("Ready for incoming connection", fontSize = 12.sp, color = OnSurfaceVariant)
+                }
+            }
+            Spacer(Modifier.height(16.dp))
 
             // ── Main Card ─────────────────────────────────────────────────────
-            Card(
+            TactileCard(
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = Surface),
+                cornerRadius = 22.dp,
+                backgroundColor = SurfaceElevated,
+                borderColor = CardBorder
             ) {
                 Column(
                     modifier = Modifier

@@ -6,6 +6,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import android.provider.OpenableColumns
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -29,6 +31,7 @@ import com.photobeam.app.protocol.*
 import com.photobeam.app.transport.WiFiTransport
 import com.photobeam.app.ui.FriendlyError
 import com.photobeam.app.ui.FriendlyErrorCard
+import com.photobeam.app.ui.components.*
 import com.photobeam.app.ui.theme.*
 import kotlinx.coroutines.*
 import org.json.JSONObject
@@ -249,8 +252,10 @@ fun SendScreen(
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
+                        .background(AppBackgroundBrush)
                         .statusBarsPadding()
-                        .padding(24.dp),
+                        .navigationBarsPadding()
+                        .padding(horizontal = 20.dp, vertical = 14.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     // Header Bar
@@ -259,35 +264,59 @@ fun SendScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        TextButton(
-                            onClick = {
-                                activeConnection?.disconnectAll()
-                                connectJob?.cancel()
-                                transferJob?.cancel()
-                                onBack()
-                            }
+                        Box(
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(SurfaceElevated)
+                                .border(1.dp, CardBorderSubtle, RoundedCornerShape(12.dp))
+                                .clickable {
+                                    activeConnection?.disconnectAll()
+                                    connectJob?.cancel()
+                                    transferJob?.cancel()
+                                    onBack()
+                                },
+                            contentAlignment = Alignment.Center
                         ) {
-                            Text("← Back", color = OnSurfaceVariant)
+                            Text("←", fontSize = 20.sp, color = OnBackground)
                         }
 
-                        TextButton(onClick = onNavigateHistory) {
-                            Text("📜 History", color = OnSurfaceVariant)
-                        }
+                        TactilePillButton(
+                            text = "📜 History",
+                            active = false,
+                            onClick = onNavigateHistory,
+                            minHeight = 36.dp
+                        )
                     }
 
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        "📤 Send Files",
-                        fontSize = 24.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = OnBackground,
-                    )
-                    Spacer(Modifier.height(20.dp))
+                    Spacer(Modifier.height(14.dp))
 
-                    Card(
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        TactileGlowRing(size = 38.dp, ringColor = PrimaryLight) {
+                            Text("📤", fontSize = 18.sp)
+                        }
+                        Spacer(Modifier.width(12.dp))
+                        Column {
+                            Text(
+                                "Send Files",
+                                fontSize = 20.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = OnBackground,
+                            )
+                            Text(
+                                "Fast & secure local transfer",
+                                fontSize = 12.sp,
+                                color = OnSurfaceVariant,
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(16.dp))
+
+                    TactileCard(
                         modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(20.dp),
-                        colors = CardDefaults.cardColors(containerColor = Surface),
+                        cornerRadius = 22.dp,
+                        backgroundColor = SurfaceElevated,
+                        borderColor = CardBorder
                     ) {
                         Column(
                             modifier = Modifier

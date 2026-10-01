@@ -71,20 +71,26 @@ class HistoryScreen(QWidget):
         self._container = QWidget()
         self._container_layout = QVBoxLayout(self._container)
         self._container_layout.setSpacing(12)
-        self._container_layout.setContentsMargins(0, 0, 0, 0)
+        self._container_layout.setContentsMargins(0, 0, 10, 0)
+        self._container_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        from PyQt6.QtWidgets import QLayout
+        self._container_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
         self._scroll.setWidget(self._container)
         root.addWidget(self._scroll)
+
+
 
     def on_shown(self):
         """Refresh records whenever screen is displayed."""
         self._refresh()
 
     def _refresh(self):
-        # Clear existing items
+        # Clear existing items and spacers
         while self._container_layout.count():
             item = self._container_layout.takeAt(0)
             w = item.widget()
             if w:
+                w.setParent(None)
                 w.deleteLater()
 
         records = self._history_mgr.get_records()
@@ -101,7 +107,7 @@ class HistoryScreen(QWidget):
             empty_layout.addWidget(icon)
 
             lbl = QLabel("No transfer history yet")
-            lbl.setObjectName("subtitle")
+            lbl.setObjectName("heading")
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             empty_layout.addWidget(lbl)
 
@@ -111,34 +117,31 @@ class HistoryScreen(QWidget):
             empty_layout.addWidget(hint)
 
             self._container_layout.addWidget(empty)
-            self._container_layout.addStretch()
             return
 
         for record in records:
             card = self._create_record_card(record)
             self._container_layout.addWidget(card)
 
-        self._container_layout.addStretch()
-
     def _create_record_card(self, r: TransferRecord) -> QFrame:
         card = QFrame()
         card.setObjectName("card")
         layout = QVBoxLayout(card)
-        layout.setSpacing(8)
-        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(10)
+        layout.setContentsMargins(18, 14, 18, 14)
 
-        # Row 1: Direction + Status + Timestamp
+        # Row 1: Direction + Transport + Status + Timestamp
         row1 = QHBoxLayout()
+        row1.setSpacing(10)
 
         dir_icon = "📤 Sent" if r.direction == "sent" else "📥 Received"
         dir_lbl = QLabel(dir_icon)
-        dir_lbl.setObjectName("heading")
-        dir_lbl.setStyleSheet("font-size: 15px; font-weight: 600;")
+        dir_lbl.setStyleSheet("font-size: 14px; font-weight: 700; color: #FFFFFF;")
         row1.addWidget(dir_lbl)
 
         # Transport badge
-        trans_lbl = QLabel(f"[{r.transport_type}]")
-        trans_lbl.setObjectName("info")
+        trans_lbl = QLabel(f"📶 {r.transport_type.upper()}" if "wifi" in r.transport_type.lower() else f"🔌 {r.transport_type.upper()}")
+        trans_lbl.setObjectName("transport_pill")
         row1.addWidget(trans_lbl)
 
         row1.addStretch()
@@ -147,15 +150,13 @@ class HistoryScreen(QWidget):
         status_lbl = QLabel()
         if r.status == "completed":
             status_lbl.setText("✓ Completed")
-            status_lbl.setObjectName("status_ok")
-            status_lbl.setStyleSheet("color: #4ade80; font-weight: 600;")
+            status_lbl.setObjectName("badge_green")
         elif r.status == "interrupted":
             status_lbl.setText("⚠ Interrupted")
-            status_lbl.setStyleSheet("color: #fbbf24; font-weight: 600;")
+            status_lbl.setObjectName("badge_orange")
         else:
             status_lbl.setText("✕ Failed")
-            status_lbl.setObjectName("status_err")
-            status_lbl.setStyleSheet("color: #f87171; font-weight: 600;")
+            status_lbl.setObjectName("badge_orange")
         row1.addWidget(status_lbl)
 
         # Timestamp
@@ -173,36 +174,36 @@ class HistoryScreen(QWidget):
             files_str += f" + {len(r.files) - 3} more"
         file_summary = f"{len(r.files)} file(s): {files_str}"
         files_lbl = QLabel(file_summary)
-        files_lbl.setStyleSheet("color: #cbd5e1; font-size: 13px;")
+        files_lbl.setStyleSheet("color: #E2E8F0; font-size: 13px; font-weight: 500;")
         files_lbl.setWordWrap(True)
         layout.addWidget(files_lbl)
 
         # Row 3: Size, duration, speed, error
         row3 = QHBoxLayout()
+        row3.setSpacing(14)
         size_lbl = QLabel(f"Size: {format_bytes(r.total_bytes)}")
-        size_lbl.setObjectName("info")
+        size_lbl.setStyleSheet("color: #94A3B8; font-size: 12px;")
         row3.addWidget(size_lbl)
 
         if r.duration_sec > 0 and r.status == "completed":
-            row3.addSpacing(12)
             dur_str = f"{r.duration_sec:.1f}s"
             if r.total_bytes > 0:
                 avg_speed = (r.total_bytes / (1024 * 1024)) / r.duration_sec
-                dur_str += f" ({avg_speed:.1f} MB/s)"
+                dur_str += f" • Speed: {avg_speed:.1f} MB/s"
             dur_lbl = QLabel(f"Duration: {dur_str}")
-            dur_lbl.setObjectName("info")
+            dur_lbl.setStyleSheet("color: #38BDF8; font-weight: 600; font-size: 12px;")
             row3.addWidget(dur_lbl)
 
         if r.error_reason:
-            row3.addSpacing(12)
             err_lbl = QLabel(f"Reason: {r.error_reason}")
-            err_lbl.setStyleSheet("color: #f87171; font-size: 12px;")
+            err_lbl.setStyleSheet("color: #F87171; font-size: 12px;")
             row3.addWidget(err_lbl)
 
         row3.addStretch()
         layout.addLayout(row3)
 
         return card
+
 
     def _on_clear(self):
         self._history_mgr.clear()

@@ -4,21 +4,24 @@ import android.os.Handler
 import android.os.Looper
 import android.widget.Toast
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-
 import androidx.compose.ui.unit.sp
 import com.photobeam.app.data.ConnectionManager
 import com.photobeam.app.data.PairingManager
@@ -26,6 +29,10 @@ import com.photobeam.app.protocol.ConnectionState
 import com.photobeam.app.protocol.PairedDevice
 import com.photobeam.app.protocol.PresenceState
 import com.photobeam.app.protocol.TrustStatus
+import com.photobeam.app.ui.components.TactileBadge
+import com.photobeam.app.ui.components.TactileCard
+import com.photobeam.app.ui.components.TactileGlowRing
+import com.photobeam.app.ui.components.TactilePillButton
 import com.photobeam.app.ui.theme.*
 
 @Composable
@@ -48,14 +55,16 @@ fun HomeScreen(
         connectionManager.refreshDevicesList()
     }
 
+    val connectedDevice = pairedDevices.firstOrNull { it.connectionState == ConnectionState.CONNECTED }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(Background)
+            .background(AppBackgroundBrush)
             .statusBarsPadding()
             .navigationBarsPadding()
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+            .padding(horizontal = 20.dp, vertical = 14.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         // ── Top Header ────────────────────────────────────────────────────────
         Row(
@@ -67,12 +76,18 @@ fun HomeScreen(
                 modifier = Modifier.weight(1f, fill = false),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("⚡", fontSize = 24.sp)
-                Spacer(Modifier.width(6.dp))
+                TactileGlowRing(
+                    size = 40.dp,
+                    ringColor = PrimaryGlow,
+                    pulse = connectedDevice != null
+                ) {
+                    Text("⚡", fontSize = 20.sp)
+                }
+                Spacer(Modifier.width(12.dp))
                 Column {
                     Text(
                         "PhotoBeam",
-                        fontSize = 19.sp,
+                        fontSize = 20.sp,
                         fontWeight = FontWeight.Bold,
                         color = OnBackground,
                         maxLines = 1
@@ -80,77 +95,242 @@ fun HomeScreen(
                     Text(
                         "📱 ${localIdentity.name}",
                         fontSize = 11.sp,
-                        color = Secondary,
+                        color = CyanAccent,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
             }
 
-            Spacer(Modifier.width(6.dp))
-
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                Button(
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TactilePillButton(
+                    text = "➕ Pair",
+                    active = true,
                     onClick = onNavigatePair,
-                    colors = ButtonDefaults.buttonColors(containerColor = Primary),
-                    shape = RoundedCornerShape(10.dp),
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
-                ) {
-                    Text("➕ Pair", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                }
+                    minHeight = 38.dp
+                )
 
-                IconButton(
-                    onClick = onNavigateHistory,
-                    modifier = Modifier.size(36.dp).clip(RoundedCornerShape(10.dp)).background(Surface)
+                Box(
+                    modifier = Modifier
+                        .size(38.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(SurfaceElevated)
+                        .border(1.dp, CardBorderSubtle, RoundedCornerShape(12.dp))
+                        .clickable(onClick = onNavigateHistory),
+                    contentAlignment = Alignment.Center
                 ) {
                     Text("📜", fontSize = 16.sp)
                 }
             }
         }
 
+        // ── Connected Hero Card (if connected) or Quick Info ───────────────────
+        if (connectedDevice != null) {
+            TactileCard(
+                modifier = Modifier.fillMaxWidth(),
+                backgroundColor = SurfaceElevated,
+                borderColor = PrimaryGlow.copy(alpha = 0.5f),
+                elevation = 10.dp
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TactileGlowRing(
+                        size = 50.dp,
+                        ringColor = Secondary,
+                        pulse = true
+                    ) {
+                        Text(
+                            text = if (connectedDevice.identity.name.contains("PC", true) || connectedDevice.identity.name.contains("Windows", true)) "💻" else "📱",
+                            fontSize = 24.sp
+                        )
+                    }
 
-        // ── Trusted Devices Section ───────────────────────────────────────────
-        Text(
-            "Trusted Devices",
-            fontSize = 16.sp,
-            fontWeight = FontWeight.SemiBold,
-            color = OnSurfaceVariant,
-            modifier = Modifier.padding(top = 4.dp)
-        )
+                    Spacer(Modifier.width(14.dp))
 
-        if (pairedDevices.isEmpty()) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f)
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(Surface)
-                    .padding(24.dp),
-                contentAlignment = Alignment.Center
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = connectedDevice.identity.name,
+                                fontSize = 17.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = OnBackground,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            TactileBadge("Active", Secondary)
+                        }
+
+                        val transportStr = connectedDevice.endpoint?.transports?.joinToString(" • ") {
+                            if (it == "usb") "⚡ USB Tunnel" else "📶 Wi-Fi"
+                        } ?: "📶 Connected"
+                        Text(
+                            text = transportStr,
+                            fontSize = 12.sp,
+                            color = CyanAccent,
+                            modifier = Modifier.padding(top = 2.dp)
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(14.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    TactilePillButton(
+                        text = "📤 Send Files",
+                        active = true,
+                        onClick = onNavigateSend,
+                        modifier = Modifier.weight(1f),
+                        minHeight = 40.dp
+                    )
+                    TactilePillButton(
+                        text = "Disconnect",
+                        active = false,
+                        onClick = {
+                            connectionManager.disconnectDevice(connectedDevice.identity.deviceId)
+                        },
+                        modifier = Modifier.weight(0.9f),
+                        minHeight = 40.dp
+                    )
+                }
+            }
+        }
+
+        // ── Quick Actions Grid (Send & Receive) ────────────────────────────────
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            // Send Action Card
+            TactileCard(
+                modifier = Modifier.weight(1f),
+                cornerRadius = 20.dp,
+                backgroundColor = Surface,
+                borderColor = CardBorder,
+                onClick = onNavigateSend
             ) {
                 Column(
+                    modifier = Modifier.fillMaxWidth(),
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Text("💻", fontSize = 42.sp)
+                    TactileGlowRing(size = 46.dp, ringColor = PrimaryLight) {
+                        Text("📤", fontSize = 20.sp)
+                    }
                     Text(
-                        "No Paired Devices Yet",
-                        fontSize = 18.sp,
+                        "Send Files",
+                        fontSize = 15.sp,
                         fontWeight = FontWeight.Bold,
                         color = OnBackground
                     )
                     Text(
-                        "Tap 'Pair Device' above to scan your PC's QR code and enable fast 1-tap local connections.",
-                        fontSize = 14.sp,
-                        color = OnSurfaceVariant,
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                        "Select or scan QR",
+                        fontSize = 11.sp,
+                        color = OnSurfaceVariant
                     )
-                    Spacer(Modifier.height(4.dp))
-                    Button(
-                        onClick = onNavigatePair,
-                        shape = RoundedCornerShape(10.dp)
+                }
+            }
+
+            // Receive Action Card
+            TactileCard(
+                modifier = Modifier.weight(1f),
+                cornerRadius = 20.dp,
+                backgroundColor = Surface,
+                borderColor = CardBorder,
+                onClick = onNavigateReceive
+            ) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    TactileGlowRing(size = 46.dp, ringColor = CyanAccent) {
+                        Text("📥", fontSize = 20.sp)
+                    }
+                    Text(
+                        "Receive",
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = OnBackground
+                    )
+                    Text(
+                        "Ready for incoming",
+                        fontSize = 11.sp,
+                        color = OnSurfaceVariant
+                    )
+                }
+            }
+        }
+
+        // ── Paired Devices Section ────────────────────────────────────────────
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 4.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                "Trusted Devices",
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Bold,
+                color = OnBackground,
+            )
+            Text(
+                "${pairedDevices.size} paired",
+                fontSize = 12.sp,
+                color = OnSurfaceVariant
+            )
+        }
+
+        if (pairedDevices.isEmpty()) {
+            TactileCard(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                cornerRadius = 22.dp,
+                backgroundColor = Surface,
+                borderColor = CardBorderSubtle,
+            ) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                        modifier = Modifier.padding(16.dp)
                     ) {
-                        Text("Pair with PC")
+                        TactileGlowRing(size = 64.dp, ringColor = CyanAccent) {
+                            Text("💻", fontSize = 32.sp)
+                        }
+                        Text(
+                            "No Paired Devices Yet",
+                            fontSize = 17.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = OnBackground
+                        )
+                        Text(
+                            "Tap 'Pair' above to scan your PC's QR code and unlock instant 1-tap transfers.",
+                            fontSize = 13.sp,
+                            color = OnSurfaceVariant,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        TactilePillButton(
+                            text = "Pair with PC",
+                            active = true,
+                            onClick = onNavigatePair,
+                            minHeight = 42.dp
+                        )
                     }
                 }
             }
@@ -189,41 +369,6 @@ fun HomeScreen(
                 }
             }
         }
-
-        // ── Ad-hoc Quick Actions ──────────────────────────────────────────────
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(14.dp),
-            colors = CardDefaults.cardColors(containerColor = Surface)
-        ) {
-            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("Quick Actions (Ad-Hoc):", fontSize = 12.sp, color = OnSurfaceVariant, fontWeight = FontWeight.Medium)
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    OutlinedButton(
-                        onClick = onNavigateReceive,
-                        modifier = Modifier.weight(1f).height(44.dp),
-                        shape = RoundedCornerShape(10.dp),
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = OnBackground)
-                    ) {
-                        Text("📥 Receive", fontSize = 12.sp, maxLines = 1)
-                    }
-                    OutlinedButton(
-                        onClick = onNavigateSend,
-                        modifier = Modifier.weight(1f).height(44.dp),
-                        shape = RoundedCornerShape(10.dp),
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = OnBackground)
-                    ) {
-                        Text("📤 Send Files", fontSize = 12.sp, maxLines = 1)
-                    }
-                }
-            }
-        }
-
     }
 }
 
@@ -237,72 +382,71 @@ private fun DeviceCard(
     onRevoke: () -> Unit,
 ) {
     var showMenu by remember { mutableStateOf(false) }
+    val isConnected = device.connectionState == ConnectionState.CONNECTED
 
-    Card(
+    TactileCard(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(containerColor = Surface),
+        cornerRadius = 18.dp,
+        backgroundColor = if (isConnected) SurfaceElevated else Surface,
+        borderColor = if (isConnected) PrimaryGlow.copy(alpha = 0.45f) else CardBorder,
     ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             // Top Row: Icon + Name + Presence + Menu
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = if (device.identity.name.contains("PC", ignoreCase = true) || device.identity.name.contains("Windows", ignoreCase = true)) "💻" else "📱",
-                    fontSize = 24.sp
-                )
-                Spacer(Modifier.width(10.dp))
+                TactileGlowRing(
+                    size = 40.dp,
+                    ringColor = if (isConnected) Secondary else if (device.presenceState == PresenceState.DISCOVERED) CyanAccent else Outline
+                ) {
+                    Text(
+                        text = if (device.identity.name.contains("PC", true) || device.identity.name.contains("Windows", true)) "💻" else "📱",
+                        fontSize = 18.sp
+                    )
+                }
+
+                Spacer(Modifier.width(12.dp))
+
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         device.identity.name,
-                        fontSize = 16.sp,
+                        fontSize = 15.sp,
                         fontWeight = FontWeight.Bold,
-                        color = OnBackground
+                        color = OnBackground,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                     val statusText = when (device.presenceState) {
-                        PresenceState.DISCOVERED -> "🟢 Online"
+                        PresenceState.DISCOVERED -> "🟢 Available on LAN"
                         PresenceState.SEARCHING -> "🟡 Searching"
                         else -> "⚪ Offline"
                     }
-                    Text(statusText, fontSize = 12.sp, color = OnSurfaceVariant)
+                    Text(statusText, fontSize = 11.sp, color = OnSurfaceVariant)
                 }
 
                 // Connection badge
-                val connColor = when (device.connectionState) {
-                    ConnectionState.CONNECTED -> Secondary
-                    ConnectionState.CONNECTING -> Primary
-                    ConnectionState.AUTHENTICATION_REQUIRED -> Error
-                    else -> Outline
+                val (connColor, connLabel) = when (device.connectionState) {
+                    ConnectionState.CONNECTED -> Pair(Secondary, "Connected")
+                    ConnectionState.CONNECTING -> Pair(PrimaryLight, "Connecting")
+                    ConnectionState.AUTHENTICATION_REQUIRED -> Pair(Error, "Auth Req")
+                    else -> Pair(OnSurfaceVariant, "Ready")
                 }
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(connColor.copy(alpha = 0.15f))
-                        .padding(horizontal = 10.dp, vertical = 4.dp)
-                ) {
-                    Text(
-                        text = device.connectionState.name.lowercase().replaceFirstChar { it.uppercase() },
-                        color = connColor,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                }
+                TactileBadge(connLabel, connColor)
 
                 Spacer(Modifier.width(4.dp))
 
                 Box {
-                    IconButton(onClick = { showMenu = true }) {
-                        Text("⋮", fontSize = 20.sp, color = OnSurfaceVariant)
+                    IconButton(
+                        onClick = { showMenu = true },
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Text("⋮", fontSize = 18.sp, color = OnSurfaceVariant)
                     }
                     DropdownMenu(
                         expanded = showMenu,
                         onDismissRequest = { showMenu = false },
-                        modifier = Modifier.background(Surface)
+                        modifier = Modifier.background(SurfaceElevated)
                     ) {
                         DropdownMenuItem(
                             text = { Text("🗑️ Forget Device", color = OnSurface) },
@@ -322,67 +466,40 @@ private fun DeviceCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 device.endpoint?.transports?.forEach { tr ->
-                    val icon = if (tr == "usb") "🔌 USB" else "📶 WI-FI"
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(Primary.copy(alpha = 0.12f))
-                            .padding(horizontal = 8.dp, vertical = 2.dp)
-                    ) {
-                        Text(icon, fontSize = 11.sp, color = Primary, fontWeight = FontWeight.Medium)
-                    }
+                    val icon = if (tr == "usb") "⚡ USB Tunnel" else "📶 Wi-Fi"
+                    TactileBadge(icon, PrimaryLight)
                 }
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(6.dp))
-                        .background(SurfaceVariant)
-                        .padding(horizontal = 8.dp, vertical = 2.dp)
-                ) {
-                    Text("📁 Transfer", fontSize = 11.sp, color = OnSurfaceVariant)
-                }
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(6.dp))
-                        .background(SurfaceVariant)
-                        .padding(horizontal = 8.dp, vertical = 2.dp)
-                ) {
-                    Text("🖥️ Mirror", fontSize = 11.sp, color = OnSurfaceVariant)
-                }
+                TactileBadge("📁 Fast Transfer", CyanAccent)
             }
 
             // Action Buttons
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                val isConnected = device.connectionState == ConnectionState.CONNECTED
-                Button(
+                TactilePillButton(
+                    text = if (isConnected) "Disconnect" else "Connect",
+                    active = !isConnected,
                     onClick = onConnectToggle,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (isConnected) SurfaceVariant else Primary
-                    ),
-                    shape = RoundedCornerShape(8.dp),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
-                ) {
-                    Text(if (isConnected) "Disconnect" else "Connect", fontSize = 12.sp)
-                }
+                    modifier = Modifier.weight(1f),
+                    minHeight = 36.dp
+                )
 
-                Button(
+                TactilePillButton(
+                    text = "📤 Send",
+                    active = isConnected,
                     onClick = onSendFiles,
-                    colors = ButtonDefaults.buttonColors(containerColor = Secondary),
-                    shape = RoundedCornerShape(8.dp),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
-                ) {
-                    Text("📤 Send Files", fontSize = 12.sp)
-                }
+                    modifier = Modifier.weight(0.9f),
+                    minHeight = 36.dp
+                )
 
-                OutlinedButton(
+                TactilePillButton(
+                    text = "🖥️ Mirror",
+                    active = false,
                     onClick = onMirror,
-                    shape = RoundedCornerShape(8.dp),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
-                ) {
-                    Text("🖥️ Mirror", fontSize = 12.sp, color = OnSurface)
-                }
+                    modifier = Modifier.weight(0.9f),
+                    minHeight = 36.dp
+                )
             }
         }
     }

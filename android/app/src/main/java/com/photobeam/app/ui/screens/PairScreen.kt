@@ -6,6 +6,8 @@ import android.os.Looper
 import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
@@ -28,6 +30,10 @@ import com.photobeam.app.protocol.PROTOCOL_VERSION
 import com.photobeam.app.protocol.PairingPayload
 import com.photobeam.app.protocol.decodePairingPayload
 import com.photobeam.app.protocol.encodePairingPayload
+import com.photobeam.app.ui.components.TactileBadge
+import com.photobeam.app.ui.components.TactileCard
+import com.photobeam.app.ui.components.TactileGlowRing
+import com.photobeam.app.ui.components.TactilePillButton
 import com.photobeam.app.ui.theme.*
 import kotlinx.coroutines.delay
 import java.util.UUID
@@ -126,7 +132,7 @@ fun PairScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(Background)
+            .background(AppBackgroundBrush)
             .statusBarsPadding()
             .navigationBarsPadding(),
     ) {
@@ -134,54 +140,58 @@ fun PairScreen(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
+                .padding(horizontal = 20.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            IconButton(onClick = onBack) {
-                Text("←", fontSize = 24.sp, color = OnBackground)
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(SurfaceElevated)
+                    .border(1.dp, CardBorderSubtle, RoundedCornerShape(12.dp))
+                    .clickable(onClick = onBack),
+                contentAlignment = Alignment.Center
+            ) {
+                Text("←", fontSize = 20.sp, color = OnBackground)
             }
-            Text(
-                "Pair New Device",
-                fontSize = 20.sp,
-                fontWeight = FontWeight.Bold,
-                color = OnBackground,
-                modifier = Modifier.padding(start = 8.dp)
-            )
+            Spacer(Modifier.width(14.dp))
+            Column {
+                Text(
+                    "Pair New Device",
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = OnBackground,
+                )
+                Text(
+                    "Secure local-network link",
+                    fontSize = 12.sp,
+                    color = CyanAccent,
+                )
+            }
         }
 
-        // Tab Selector (Scan vs Show QR)
+        // Neo-Tactile Pill Toggle Selector (Inspired by Reference 1: "Defart" / "active")
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 24.dp, vertical = 8.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .background(Surface),
+                .padding(horizontal = 20.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Button(
+            TactilePillButton(
+                text = "📷 Scan PC QR",
+                active = selectedTab == 0,
                 onClick = { selectedTab = 0 },
-                modifier = Modifier.weight(1f),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (selectedTab == 0) Primary else Color.Transparent,
-                    contentColor = if (selectedTab == 0) Color.White else OnSurfaceVariant
-                ),
-                shape = RoundedCornerShape(12.dp),
-            ) {
-                Text("📷 Scan QR", fontWeight = FontWeight.SemiBold)
-            }
-            Button(
+                modifier = Modifier.weight(1f)
+            )
+            TactilePillButton(
+                text = "📱 Show My QR",
+                active = selectedTab == 1,
                 onClick = { selectedTab = 1 },
-                modifier = Modifier.weight(1f),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (selectedTab == 1) Primary else Color.Transparent,
-                    contentColor = if (selectedTab == 1) Color.White else OnSurfaceVariant
-                ),
-                shape = RoundedCornerShape(12.dp),
-            ) {
-                Text("📱 Show My QR", fontWeight = FontWeight.SemiBold)
-            }
+                modifier = Modifier.weight(1f)
+            )
         }
 
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(8.dp))
 
         if (selectedTab == 0) {
             // Scanner view
@@ -189,8 +199,9 @@ fun PairScreen(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .padding(horizontal = 24.dp)
-                    .clip(RoundedCornerShape(20.dp))
+                    .padding(horizontal = 20.dp, vertical = 8.dp)
+                    .clip(RoundedCornerShape(24.dp))
+                    .border(1.5.dp, CardBorder, RoundedCornerShape(24.dp))
             ) {
                 val isScanning = uiState is PairUiState.Ready
 
@@ -198,8 +209,8 @@ fun PairScreen(
                     modifier = Modifier.fillMaxSize(),
                     isScanningActive = isScanning,
                     promptText = when (uiState) {
-                        is PairUiState.Ready -> "Point camera at the PhotoBeam QR code on your PC"
-                        is PairUiState.Connecting -> "QR detected! Verifying challenge..."
+                        is PairUiState.Ready -> "Align PC pairing QR code within frame"
+                        is PairUiState.Connecting -> "QR detected! Verifying with PC..."
                         is PairUiState.Success -> "Pairing complete!"
                         is PairUiState.Error -> "Pairing failed"
                     },
@@ -209,72 +220,74 @@ fun PairScreen(
                 // State Feedback Overlay
                 when (val s = uiState) {
                     is PairUiState.Connecting -> {
-                        Surface(
+                        TactileCard(
                             modifier = Modifier
                                 .align(Alignment.Center)
-                                .padding(24.dp),
-                            shape = RoundedCornerShape(20.dp),
-                            color = Color(0xFF1E293B).copy(alpha = 0.95f),
-                            shadowElevation = 8.dp,
+                                .padding(28.dp),
+                            backgroundColor = SurfaceElevated.copy(alpha = 0.96f),
+                            borderColor = PrimaryGlow
                         ) {
                             Column(
-                                modifier = Modifier.padding(24.dp),
+                                modifier = Modifier.fillMaxWidth(),
                                 horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.spacedBy(14.dp),
+                                verticalArrangement = Arrangement.spacedBy(12.dp)
                             ) {
-                                CircularProgressIndicator(color = Primary, modifier = Modifier.size(44.dp))
-                                Text("Connecting to PC...", fontWeight = FontWeight.Bold, color = Color.White, fontSize = 16.sp)
-                                Text(s.message, color = Color.LightGray, fontSize = 13.sp, textAlign = TextAlign.Center)
+                                TactileGlowRing(size = 52.dp, ringColor = PrimaryGlow, pulse = true) {
+                                    CircularProgressIndicator(color = PrimaryGlow, modifier = Modifier.size(32.dp), strokeWidth = 3.dp)
+                                }
+                                Text("Connecting to PC...", fontWeight = FontWeight.Bold, color = OnBackground, fontSize = 16.sp)
+                                Text(s.message, color = OnSurfaceVariant, fontSize = 13.sp, textAlign = TextAlign.Center)
                             }
                         }
                     }
 
                     is PairUiState.Success -> {
-                        Surface(
+                        TactileCard(
                             modifier = Modifier
                                 .align(Alignment.Center)
-                                .padding(24.dp),
-                            shape = RoundedCornerShape(20.dp),
-                            color = Color(0xFF0F291E).copy(alpha = 0.95f),
-                            shadowElevation = 8.dp,
+                                .padding(28.dp),
+                            backgroundColor = SurfaceElevated.copy(alpha = 0.96f),
+                            borderColor = Secondary
                         ) {
                             Column(
-                                modifier = Modifier.padding(24.dp),
+                                modifier = Modifier.fillMaxWidth(),
                                 horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.spacedBy(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
-                                Text("✅", fontSize = 40.sp)
-                                Text("Pairing Successful!", fontWeight = FontWeight.Bold, color = Color(0xFF2ED573), fontSize = 18.sp)
-                                Text("Connected to ${s.deviceName}", color = Color.White, fontSize = 14.sp)
+                                TactileGlowRing(size = 52.dp, ringColor = Secondary) {
+                                    Text("✅", fontSize = 26.sp)
+                                }
+                                Text("Pairing Successful!", fontWeight = FontWeight.Bold, color = Secondary, fontSize = 18.sp)
+                                Text("Connected to ${s.deviceName}", color = OnBackground, fontSize = 14.sp)
                             }
                         }
                     }
 
                     is PairUiState.Error -> {
-                        Surface(
+                        TactileCard(
                             modifier = Modifier
                                 .align(Alignment.Center)
-                                .padding(24.dp),
-                            shape = RoundedCornerShape(20.dp),
-                            color = Color(0xFF2B161B).copy(alpha = 0.96f),
-                            shadowElevation = 8.dp,
+                                .padding(28.dp),
+                            backgroundColor = SurfaceElevated.copy(alpha = 0.96f),
+                            borderColor = Error
                         ) {
                             Column(
-                                modifier = Modifier.padding(24.dp),
+                                modifier = Modifier.fillMaxWidth(),
                                 horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.spacedBy(14.dp),
+                                verticalArrangement = Arrangement.spacedBy(12.dp)
                             ) {
-                                Text("⚠️", fontSize = 36.sp)
-                                Text("Pairing Failed", fontWeight = FontWeight.Bold, color = Color(0xFFFF4757), fontSize = 17.sp)
-                                Text(s.message, color = Color.LightGray, fontSize = 13.sp, textAlign = TextAlign.Center)
-                                Spacer(Modifier.height(4.dp))
-                                Button(
-                                    onClick = { uiState = PairUiState.Ready },
-                                    colors = ButtonDefaults.buttonColors(containerColor = Primary),
-                                    shape = RoundedCornerShape(12.dp),
-                                ) {
-                                    Text("🔄 Scan Again / Retry", color = OnBackground, fontWeight = FontWeight.Bold)
+                                TactileGlowRing(size = 52.dp, ringColor = Error) {
+                                    Text("⚠️", fontSize = 24.sp)
                                 }
+                                Text("Pairing Failed", fontWeight = FontWeight.Bold, color = Error, fontSize = 17.sp)
+                                Text(s.message, color = OnSurfaceVariant, fontSize = 13.sp, textAlign = TextAlign.Center)
+                                Spacer(Modifier.height(4.dp))
+                                TactilePillButton(
+                                    text = "🔄 Scan Again / Retry",
+                                    active = true,
+                                    onClick = { uiState = PairUiState.Ready },
+                                    modifier = Modifier.fillMaxWidth()
+                                )
                             }
                         }
                     }
@@ -312,39 +325,45 @@ fun PairScreen(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .padding(24.dp),
+                    .padding(20.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center,
             ) {
-                Card(
-                    modifier = Modifier.padding(16.dp),
-                    shape = RoundedCornerShape(24.dp),
-                    colors = CardDefaults.cardColors(containerColor = Surface),
+                TactileCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    cornerRadius = 24.dp,
+                    backgroundColor = SurfaceElevated,
+                    borderColor = CardBorder
                 ) {
                     Column(
-                        modifier = Modifier.padding(24.dp),
+                        modifier = Modifier.fillMaxWidth(),
                         horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
                         qrBitmap?.let { bmp ->
-                            Image(
-                                bitmap = bmp.asImageBitmap(),
-                                contentDescription = "Local Pairing QR",
+                            Box(
                                 modifier = Modifier
                                     .size(240.dp)
-                                    .clip(RoundedCornerShape(16.dp))
+                                    .clip(RoundedCornerShape(20.dp))
                                     .background(Color.White)
-                                    .padding(12.dp)
-                            )
+                                    .padding(14.dp)
+                            ) {
+                                Image(
+                                    bitmap = bmp.asImageBitmap(),
+                                    contentDescription = "Local Pairing QR",
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
                         }
-                        Spacer(Modifier.height(16.dp))
                         Text(
                             localIdentity.name,
                             fontWeight = FontWeight.Bold,
                             fontSize = 18.sp,
                             color = OnBackground,
                         )
+                        TactileBadge("📱 Ready for Scanning", CyanAccent)
                         Text(
-                            "Scan with PhotoBeam on another device",
+                            "Scan this code using the PhotoBeam desktop client to pair immediately.",
                             fontSize = 12.sp,
                             color = OnSurfaceVariant,
                             textAlign = TextAlign.Center,
