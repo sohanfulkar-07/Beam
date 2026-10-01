@@ -226,19 +226,10 @@ class SenderWorker(QObject):
                     timeout=4.0,
                     cert_fp=payload.cert_fp,
                 )
-                u.send_json({
-                    "type": MessageType.HELLO,
-                    "v": 1,
-                    "sid": payload.sid,
-                    "token": payload.token,
-                    "channel": "data",
-                })
-                ack = u.recv_json(timeout=5.0)
-                if ack.get("type") == MessageType.HELLO_ACK:
-                    usb_transport = u
-                    scheduler.add_transport(u)
-                    active_transports_desc = "USB Tunnel"
-                    self._transport_type = "USB"
+                usb_transport = u
+                scheduler.add_transport(u)
+                active_transports_desc = "USB Tunnel"
+                self._transport_type = "USB"
             except Exception:
                 pass
 
@@ -272,21 +263,25 @@ class SenderWorker(QObject):
         device_name = f"Receiver ({payload.addrs[0] if payload.addrs else 'USB'})"
         self.connected.emit(device_name, active_transports_desc)
 
+        ctrl_transport = usb_transport or wifi_transport
+        if not ctrl_transport:
+            return
+
         # Handshake on control channel
         import uuid
         sender_id = str(uuid.uuid4())
-        wifi_transport.send_json({
+        ctrl_transport.send_json({
             "type": MessageType.HELLO,
             "v": 1,
             "sid": payload.sid,
             "token": payload.token,
             "sender_id": sender_id,
         })
-        ack = wifi_transport.recv_json(timeout=15.0)
+        ack = ctrl_transport.recv_json(timeout=15.0)
         if ack.get("type") != MessageType.HELLO_ACK:
             err_code = ack.get("code", ack.get("type", "unknown"))
             self.error.emit(f"Handshake failed: {err_code}", "handshake_failed")
-            wifi_transport.disconnect()
+            ctrl_transport.disconnect()
             return
 
         self.status.emit("Preparing files…")
@@ -302,13 +297,13 @@ class SenderWorker(QObject):
         total_batch_bytes = sum(i.size for i in infos)
 
         # Send READY immediately
-        wifi_transport.send_json(xfer.build_ready_message(infos))
+        ctrl_transport.send_json(xfer.build_ready_message(infos))
         self.status.emit("Waiting for receiver to accept…")
 
         # Receive ACCEPT / REJECT
         accepted = {}
         for _ in infos:
-            msg = wifi_transport.recv_json(timeout=120.0)
+            msg = ctrl_transport.recv_json(timeout=120.0)
             if msg.get("type") == MessageType.ACCEPT:
                 fid = msg["fid"]
                 rx_chunks = set(msg.get("received_chunks", []))
@@ -319,7 +314,8 @@ class SenderWorker(QObject):
                     self.error.emit("Transfer stopped: Receiver does not have enough storage space.", "not_enough_space")
                 else:
                     self.error.emit(f"Receiver declined transfer: {reason}", "rejected")
-                wifi_transport.disconnect()
+                if wifi_transport:
+                    wifi_transport.disconnect()
                 if usb_transport:
                     usb_transport.disconnect()
                 return
@@ -377,8 +373,8 @@ class SenderWorker(QObject):
                         continue
 
                     try:
-                        wifi_transport.send_json({"type": MessageType.RESUME, "fid": info.fid})
-                        res_reply = wifi_transport.recv_json(timeout=10.0)
+                        ctrl_transport.send_json({"type": MessageType.RESUME, "fid": info.fid})
+                        res_reply = ctrl_transport.recv_json(timeout=10.0)
                         if res_reply.get("type") == MessageType.ACCEPT:
                             skip_set = set(res_reply.get("received_chunks", []))
                         elif res_reply.get("type") == MessageType.FILE_DONE:
@@ -405,8 +401,8 @@ class SenderWorker(QObject):
                 if xfer.is_paused():
                     self.pausing.emit()
                     try:
-                        wifi_transport.send_json({"type": MessageType.PAUSE, "fid": info.fid})
-                        ack_p = wifi_transport.recv_json(timeout=5.0)
+                        ctrl_transport.send_json({"type": MessageType.PAUSE, "fid": info.fid})
+                        ack_p = ctrl_transport.recv_json(timeout=5.0)
                         if ack_p.get("type") == MessageType.PAUSE_ACK:
                             skip_set = set(ack_p.get("received_chunks", []))
                     except Exception:
@@ -440,8 +436,8 @@ class SenderWorker(QObject):
                         continue
 
                     try:
-                        wifi_transport.send_json({"type": MessageType.RESUME, "fid": info.fid})
-                        res_reply = wifi_transport.recv_json(timeout=10.0)
+                        ctrl_transport.send_json({"type": MessageType.RESUME, "fid": info.fid})
+                        res_reply = ctrl_transport.recv_json(timeout=10.0)
                         if res_reply.get("type") == MessageType.ACCEPT:
                             skip_set = set(res_reply.get("received_chunks", []))
                         elif res_reply.get("type") == MessageType.FILE_DONE:
@@ -467,7 +463,7 @@ class SenderWorker(QObject):
                         computed_sha = xfer._files[info.fid].info.sha256
                         if computed_sha:
                             try:
-                                wifi_transport.send_json({"type": MessageType.FILE_CHECKSUM, "fid": info.fid, "sha256": computed_sha})
+                                ctrl_transport.send_json({"type": MessageType.FILE_CHECKSUM, "fid": info.fid, "sha256": computed_sha})
                             except Exception:
                                 pass
                     break
@@ -481,7 +477,7 @@ class SenderWorker(QObject):
 
         while len(completed_fids) < len(infos) and not self._stop.is_set():
             try:
-                msg = wifi_transport.recv_json(timeout=3600.0)
+                msg = ctrl_transport.recv_json(timeout=3600.0)
             except Exception:
                 remaining = [inf.name for inf in infos if inf.fid not in completed_fids]
                 for rname in remaining:
@@ -513,11 +509,12 @@ class SenderWorker(QObject):
                     completed_fids.add(info.fid)
             elif m_type == MessageType.PING:
                 try:
-                    wifi_transport.send_json({"type": MessageType.PONG, "ts": msg.get("ts", 0)})
+                    ctrl_transport.send_json({"type": MessageType.PONG, "ts": msg.get("ts", 0)})
                 except Exception:
                     pass
 
-        wifi_transport.disconnect()
+        if wifi_transport:
+            wifi_transport.disconnect()
         if usb_transport:
             usb_transport.disconnect()
 
@@ -570,8 +567,15 @@ class SendScreen(QWidget):
                 self.connection_manager.sig_device_connected.connect(lambda dev_id, tr: self.refresh_connection_status())
             if hasattr(self.connection_manager, "sig_device_disconnected") and self.connection_manager.sig_device_disconnected:
                 self.connection_manager.sig_device_disconnected.connect(lambda dev_id: self.refresh_connection_status())
+            if hasattr(self.connection_manager, "sig_receive_offer") and self.connection_manager.sig_receive_offer:
+                self.connection_manager.sig_receive_offer.connect(self._on_sig_receive_offer)
         self.refresh_connection_status()
         self.setAcceptDrops(True)
+
+    def _on_sig_receive_offer(self, device_id: str, uri: str):
+        if not self._target_device_id or self._target_device_id == device_id:
+            if not self._qr_input.text() and uri:
+                self._qr_input.setText(uri)
 
     def _build_ui(self):
         root = QVBoxLayout(self)
@@ -1042,6 +1046,10 @@ class SendScreen(QWidget):
         """Set the target device to send to and refresh status."""
         self._target_device_id = device_id
         self.refresh_connection_status()
+        if self.connection_manager and hasattr(self.connection_manager, "get_latest_receive_offer"):
+            offer = self.connection_manager.get_latest_receive_offer(device_id)
+            if offer and not self._qr_input.text():
+                self._qr_input.setText(offer)
 
     def set_selected_files(self, paths: List[Path]):
         """Programmatically select files (e.g. from Drag & Drop on dashboard/mirror)."""

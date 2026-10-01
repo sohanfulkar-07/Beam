@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent
 from PyQt6.QtWidgets import (
     QFileDialog,
@@ -101,13 +101,20 @@ class HomeScreen(QWidget):
         if hasattr(self.connection_manager, "sig_device_updated") and self.connection_manager.sig_device_updated:
             self.connection_manager.sig_device_updated.connect(self._on_sig_device_updated)
         if hasattr(self.connection_manager, "sig_device_connected") and self.connection_manager.sig_device_connected:
-            self.connection_manager.sig_device_connected.connect(lambda dev_id, tr: self.refresh_devices())
+            self.connection_manager.sig_device_connected.connect(self._on_device_connected)
         if hasattr(self.connection_manager, "sig_device_disconnected") and self.connection_manager.sig_device_disconnected:
             self.connection_manager.sig_device_disconnected.connect(lambda dev_id: self.refresh_devices())
         if hasattr(self.connection_manager, "sig_connection_state_changed") and self.connection_manager.sig_connection_state_changed:
             self.connection_manager.sig_connection_state_changed.connect(lambda dev_id, st: self.refresh_devices())
 
         self._filter_mode = "all"  # "all" or "online"
+        self._last_connected_id = ""
+
+        # Fallback: poll every 3s so the UI stays in sync even if a signal is missed
+        self._sync_timer = QTimer(self)
+        self._sync_timer.setInterval(3000)
+        self._sync_timer.timeout.connect(self._periodic_sync)
+        self._sync_timer.start()
 
         self._build_ui()
 
@@ -406,8 +413,13 @@ class HomeScreen(QWidget):
             self._lbl_session_status.setText(f"🟢 Connected to {name}{trans_str}")
             self._lbl_session_status.setStyleSheet("color: #4ADE80; font-weight: 600; font-size: 12px;")
         else:
-            self._lbl_session_status.setText("⚪ Disconnected (Scan QR to Connect)")
-            self._lbl_session_status.setStyleSheet("color: #94A3B8; font-weight: 600; font-size: 12px;")
+            connecting = [d for d in all_devices if d.connection_state == ConnectionState.CONNECTING]
+            if connecting:
+                self._lbl_session_status.setText(f"🟡 Connecting to {connecting[0].identity.name}…")
+                self._lbl_session_status.setStyleSheet("color: #F59E0B; font-weight: 600; font-size: 12px;")
+            else:
+                self._lbl_session_status.setText("⚪ Disconnected (Scan QR to Connect)")
+                self._lbl_session_status.setStyleSheet("color: #94A3B8; font-weight: 600; font-size: 12px;")
 
         if not devices:
             empty = QFrame()
@@ -632,14 +644,22 @@ class HomeScreen(QWidget):
         btn_row.setSpacing(10)
 
         is_conn = dev.connection_state == ConnectionState.CONNECTED
-        conn_btn = QPushButton("Disconnect" if is_conn else "Connect")
-        conn_btn.setObjectName("action_sm")
-        conn_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        is_connecting = dev.connection_state == ConnectionState.CONNECTING
         dev_id = dev.identity.device_id
         if is_conn:
-            conn_btn.clicked.connect(lambda: self.connection_manager.disconnect_device(dev_id))
+            conn_btn = QPushButton("Disconnect")
+            conn_btn.setObjectName("action_sm")
+            conn_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            conn_btn.clicked.connect(lambda _, d=dev_id: self.connection_manager.disconnect_device(d))
+        elif is_connecting:
+            conn_btn = QPushButton("Connecting…")
+            conn_btn.setObjectName("action_sm")
+            conn_btn.setEnabled(False)
         else:
-            conn_btn.clicked.connect(lambda: self.connection_manager.connect_device(dev_id))
+            conn_btn = QPushButton("Connect")
+            conn_btn.setObjectName("action_sm")
+            conn_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            conn_btn.clicked.connect(lambda _, d=dev_id: self.connection_manager.connect_device(d))
         btn_row.addWidget(conn_btn)
 
         send_btn = QPushButton(" Send Files")
@@ -716,10 +736,25 @@ class HomeScreen(QWidget):
     def _on_sig_device_updated(self, dev: PairedDevice):
         self.refresh_devices()
 
+    @pyqtSlot(str, str)
+    def _on_device_connected(self, dev_id: str, transport: str):
+        """Called on GUI thread when a device connects — force-refresh and show status."""
+        self._last_connected_id = dev_id
+        self.refresh_devices()
+
+    def _periodic_sync(self):
+        """Polls connection state every 3s as a fallback so the UI never gets stuck."""
+        active_id = self.connection_manager.get_active_connected_device_id()
+        if active_id != self._last_connected_id:
+            self._last_connected_id = active_id
+            self.refresh_devices()
+
     def _on_device_updated_from_bg(self, dev: PairedDevice):
         from PyQt6.QtCore import QMetaObject, Qt
         QMetaObject.invokeMethod(self, "refresh_devices", Qt.ConnectionType.QueuedConnection)
 
     def closeEvent(self, event):
+        self._sync_timer.stop()
         self.connection_manager.remove_device_updated_callback(self._on_device_updated_from_bg)
         super().closeEvent(event)
+

@@ -13,16 +13,21 @@ import com.photobeam.app.protocol.PairedDevice
 import com.photobeam.app.protocol.PairingPayload
 import com.photobeam.app.protocol.PresenceState
 import com.photobeam.app.protocol.TrustStatus
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
@@ -55,6 +60,48 @@ class ConnectionManager private constructor(private val appContext: Context) {
     private val connectingDevices = ConcurrentHashMap.newKeySet<String>()
     private val activePairingTokens = ConcurrentHashMap<String, Long>()
 
+    private val _receiveOfferFlow = MutableSharedFlow<Pair<String, String>>(extraBufferCapacity = 16)
+    val receiveOfferFlow: SharedFlow<Pair<String, String>> = _receiveOfferFlow.asSharedFlow()
+    private val latestReceiveOffers = ConcurrentHashMap<String, String>()
+
+    fun getLatestReceiveOffer(deviceId: String? = null): String? {
+        return if (deviceId != null) {
+            latestReceiveOffers[deviceId]
+        } else {
+            latestReceiveOffers.values.firstOrNull()
+        }
+    }
+
+    @Volatile
+    private var currentLocalReceiveOffer: String? = null
+
+    fun broadcastReceiveOffer(uri: String) {
+        currentLocalReceiveOffer = uri
+        val localId = pairingManager.getLocalIdentity()
+        val offer = JSONObject().apply {
+            put("type", "RECEIVE_OFFER")
+            put("uri", uri)
+            put("device_id", localId.deviceId)
+            put("ts", System.currentTimeMillis())
+        }
+        synchronized(activeSessions) {
+            for ((_, session) in activeSessions) {
+                session.sendMsg(offer)
+            }
+        }
+        Log.i(tag, "[DIAG] [RECEIVE_OFFER_BROADCAST] Broadcasted receive offer across active sessions: $uri")
+    }
+
+    fun clearLocalReceiveOffer() {
+        currentLocalReceiveOffer = null
+    }
+
+    private fun onReceiveOfferReceived(deviceId: String, uri: String) {
+        latestReceiveOffers[deviceId] = uri
+        _receiveOfferFlow.tryEmit(Pair(deviceId, uri))
+        Log.i(tag, "[DIAG] [RECEIVE_OFFER_RCVD] Received offer from $deviceId: $uri")
+    }
+
     private val powerManager by lazy { appContext.getSystemService(Context.POWER_SERVICE) as PowerManager }
     private val wifiManager by lazy { appContext.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager }
     private var wakeLock: PowerManager.WakeLock? = null
@@ -62,7 +109,8 @@ class ConnectionManager private constructor(private val appContext: Context) {
 
     private var serverJob: Job? = null
     private var serverSocket: ServerSocket? = null
-    private var isRunning = false
+    var isRunning = false
+        private set
 
     companion object {
         const val CONTROL_PORT = 47470
@@ -246,9 +294,18 @@ class ConnectionManager private constructor(private val appContext: Context) {
                 synchronized(activeSessions) {
                     val existing = activeSessions[remoteId]
                     existing?.close("replaced_by_pairing")
-                    val session = ActiveSession(clientSock, remoteId, transportType, scope, ::onSessionClosed, tag)
+                    val session = ActiveSession(clientSock, remoteId, transportType, scope, ::onSessionClosed, ::onReceiveOfferReceived, tag)
                     activeSessions[remoteId] = session
                     session.start()
+                    currentLocalReceiveOffer?.let { offerUri ->
+                        val offer = JSONObject().apply {
+                            put("type", "RECEIVE_OFFER")
+                            put("uri", offerUri)
+                            put("device_id", localId.deviceId)
+                            put("ts", System.currentTimeMillis())
+                        }
+                        session.sendMsg(offer)
+                    }
                 }
 
                 connectingDevices.remove(remoteId)
@@ -304,9 +361,19 @@ class ConnectionManager private constructor(private val appContext: Context) {
                 clientSock.outputStream.write(ackBytes)
                 clientSock.outputStream.flush()
 
-                val session = ActiveSession(clientSock, remoteId, transportType, scope, ::onSessionClosed, tag)
+                val session = ActiveSession(clientSock, remoteId, transportType, scope, ::onSessionClosed, ::onReceiveOfferReceived, tag)
                 activeSessions[remoteId] = session
                 session.start()
+                currentLocalReceiveOffer?.let { offerUri ->
+                    val localId = pairingManager.getLocalIdentity()
+                    val offer = JSONObject().apply {
+                        put("type", "RECEIVE_OFFER")
+                        put("uri", offerUri)
+                        put("device_id", localId.deviceId)
+                        put("ts", System.currentTimeMillis())
+                    }
+                    session.sendMsg(offer)
+                }
             }
 
             connectingDevices.remove(remoteId)
@@ -389,84 +456,148 @@ class ConnectionManager private constructor(private val appContext: Context) {
                     presenceState = PresenceState.DISCOVERED,
                 )
 
+                // Save in CONNECTING state initially
                 pairingManager.savePairedDevice(pairedDevice)
                 refreshDevicesList()
 
-                withContext(Dispatchers.Main) {
-                    try { onSuccess(pairedDevice) } catch (e: Exception) { Log.e(tag, "Error in onSuccess", e) }
+                val pairReq = JSONObject().apply {
+                    put("type", "PAIR_REQUEST")
+                    put("token", payload.token)
+                    put("nonce", payload.pairingNonce)
+                    put("device_id", localId.deviceId)
+                    put("name", localId.name)
+                    put("public_key", localId.publicKey)
+                    put("capabilities", org.json.JSONArray(listOf("file_transfer", "screen_mirror_send", "screen_mirror_receive")))
+                    put("addrs", org.json.JSONArray(discoveryService.getLocalIpAddresses()))
+                    put("port", CONTROL_PORT)
+                    put("transports", org.json.JSONArray(listOf("wifi", "usb")))
+                    put("ts", System.currentTimeMillis())
+                }
+                val reqBytes = (pairReq.toString() + "\n").toByteArray(Charsets.UTF_8)
+
+                // 1. Try USB reverse tunnel first if present
+                var pairedSock: Socket? = null
+                var pairedTransport: String? = null
+
+                try {
+                    val usbSock = Socket()
+                    usbSock.tcpNoDelay = true
+                    usbSock.keepAlive = true
+                    usbSock.connect(InetSocketAddress("127.0.0.1", CONTROL_USB_PORT), 400)
+                    usbSock.outputStream.write(reqBytes)
+                    usbSock.outputStream.flush()
+                    usbSock.soTimeout = 2500
+                    val reader = BufferedReader(InputStreamReader(usbSock.inputStream, Charsets.UTF_8))
+                    val line = reader.readLine()
+                    if (line != null) {
+                        val resp = JSONObject(line.trim())
+                        if (resp.optString("type") == "PAIR_ACK" && resp.optString("status") == "ok") {
+                            pairedSock = usbSock
+                            pairedTransport = "usb"
+                            Log.i(tag, "[DIAG] [PAIR_OK] Connected and paired via usb tunnel")
+                        }
+                    }
+                    if (pairedSock == null) {
+                        try { usbSock.close() } catch (e: Exception) {}
+                    }
+                } catch (e: Exception) {
+                    // USB not available or refused, fallback immediately to Wi-Fi
                 }
 
-                // Asynchronously complete PAIR_REQUEST network handshake
-                scope.launch {
-                    val candidates = mutableListOf<Pair<String, Int>>()
-                    // 1. Try USB reverse tunnel
-                    candidates.add(Pair("127.0.0.1", CONTROL_USB_PORT))
-                    // 2. Try Wi-Fi addresses
-                    for (a in payload.addrs) {
-                        if (!a.startsWith("127.")) {
-                            candidates.add(Pair(a, targetPort))
-                        }
-                    }
-
-                    var pairedSock: Socket? = null
-                    var pairedTransport = "wifi"
-
-                    val pairReq = JSONObject().apply {
-                        put("type", "PAIR_REQUEST")
-                        put("token", payload.token)
-                        put("nonce", payload.pairingNonce)
-                        put("device_id", localId.deviceId)
-                        put("name", localId.name)
-                        put("public_key", localId.publicKey)
-                        put("capabilities", org.json.JSONArray(listOf("file_transfer", "screen_mirror_send", "screen_mirror_receive")))
-                        put("addrs", org.json.JSONArray(discoveryService.getLocalIpAddresses()))
-                        put("port", CONTROL_PORT)
-                        put("transports", org.json.JSONArray(listOf("wifi", "usb")))
-                        put("ts", System.currentTimeMillis())
-                    }
-                    val reqBytes = (pairReq.toString() + "\n").toByteArray(Charsets.UTF_8)
-
-                    for ((ip, port) in candidates) {
-                        try {
-                            val s = Socket()
-                            s.tcpNoDelay = true
-                            s.keepAlive = true
-                            s.connect(InetSocketAddress(ip, port), 2000)
-                            s.outputStream.write(reqBytes)
-                            s.outputStream.flush()
-
-                            s.soTimeout = 3000
-                            val reader = BufferedReader(InputStreamReader(s.inputStream, Charsets.UTF_8))
-                            val line = reader.readLine()
-                            if (line != null) {
-                                val resp = JSONObject(line.trim())
-                                if (resp.optString("type") == "PAIR_ACK" && resp.optString("status") == "ok") {
-                                    pairedSock = s
-                                    pairedTransport = if (ip.startsWith("127.")) "usb" else "wifi"
-                                    Log.i(tag, "[DIAG] [PAIR_OK] Connected and paired via $pairedTransport with $ip:$port")
-                                    break
+                // 2. If USB didn't connect, try Wi-Fi candidates
+                if (pairedSock == null) {
+                    val wifiAddrs = payload.addrs.filter { !it.startsWith("127.") && !it.startsWith("169.254.") }
+                    if (wifiAddrs.isNotEmpty()) {
+                        val winner = CompletableDeferred<Pair<Socket, String>?>()
+                        val candidateJobs = mutableListOf<Job>()
+                        wifiAddrs.forEach { addr ->
+                            val job = launch(Dispatchers.IO) {
+                                var s: Socket? = null
+                                try {
+                                    s = Socket()
+                                    s.tcpNoDelay = true
+                                    s.keepAlive = true
+                                    s.connect(InetSocketAddress(addr, targetPort), 3000)
+                                    s.outputStream.write(reqBytes)
+                                    s.outputStream.flush()
+                                    s.soTimeout = 3000
+                                    val reader = BufferedReader(InputStreamReader(s.inputStream, Charsets.UTF_8))
+                                    val line = reader.readLine()
+                                    if (line != null) {
+                                        val resp = JSONObject(line.trim())
+                                        if (resp.optString("type") == "PAIR_ACK" && resp.optString("status") == "ok") {
+                                            if (winner.complete(Pair(s, "wifi"))) {
+                                                Log.i(tag, "[DIAG] [PAIR_OK] Connected and paired via wifi with $addr:$targetPort")
+                                                return@launch
+                                            }
+                                        }
+                                    }
+                                    try { s.close() } catch (e: Exception) {}
+                                } catch (e: Exception) {
+                                    try { s?.close() } catch (ex: Exception) {}
                                 }
                             }
-                            s.close()
-                        } catch (e: Exception) {
-                            Log.d(tag, "Pair connect attempt to $ip:$port failed: ${e.message}")
+                            candidateJobs.add(job)
                         }
-                    }
 
-                    if (pairedSock != null) {
-                        synchronized(activeSessions) {
-                            val existing = activeSessions[payload.rid]
-                            existing?.close("replaced_by_pairing")
-                            val session = ActiveSession(pairedSock, payload.rid, pairedTransport, scope, ::onSessionClosed, tag)
-                            activeSessions[payload.rid] = session
-                            session.start()
+                        launch {
+                            candidateJobs.forEach { it.join() }
+                            if (!winner.isCompleted) {
+                                winner.complete(null)
+                            }
                         }
-                        acquireLocks()
-                        pairingManager.updateConnectionState(payload.rid, ConnectionState.CONNECTED)
-                    } else {
-                        pairingManager.updateConnectionState(payload.rid, ConnectionState.DISCONNECTED)
+
+                        val win = try {
+                            withTimeoutOrNull(4000L) { winner.await() }
+                        } catch (e: Exception) {
+                            null
+                        }
+                        if (win != null) {
+                            pairedSock = win.first
+                            pairedTransport = win.second
+                        }
                     }
+                }
+
+                val winningResult = if (pairedSock != null && pairedTransport != null) Pair(pairedSock, pairedTransport) else null
+
+                if (winningResult != null) {
+                    val (pairedSock, pairedTransport) = winningResult
+                    val connectedDevice = pairedDevice.copy(
+                        connectionState = ConnectionState.CONNECTED,
+                        presenceState = PresenceState.DISCOVERED,
+                    )
+                    pairingManager.savePairedDevice(connectedDevice)
+
+                    synchronized(activeSessions) {
+                        val existing = activeSessions[payload.rid]
+                        existing?.close("replaced_by_pairing")
+                        val session = ActiveSession(pairedSock, payload.rid, pairedTransport, scope, ::onSessionClosed, ::onReceiveOfferReceived, tag)
+                        activeSessions[payload.rid] = session
+                        session.start()
+                    }
+                    acquireLocks()
+                    pairingManager.updateConnectionState(payload.rid, ConnectionState.CONNECTED)
                     refreshDevicesList()
+
+                    withContext(Dispatchers.Main) {
+                        try {
+                            onSuccess(connectedDevice)
+                        } catch (e: Exception) {
+                            Log.e(tag, "Error in onSuccess", e)
+                        }
+                    }
+                } else {
+                    pairingManager.updateConnectionState(payload.rid, ConnectionState.DISCONNECTED)
+                    refreshDevicesList()
+                    val addrList = payload.addrs.filter { !it.startsWith("127.") }.joinToString()
+                    withContext(Dispatchers.Main) {
+                        try {
+                            onError("Could not reach PC ($addrList:$targetPort). Ensure both devices are on the same Wi-Fi.")
+                        } catch (e: Exception) {
+                            Log.e(tag, "Error in onError", e)
+                        }
+                    }
                 }
 
             } catch (e: Exception) {
@@ -525,51 +656,79 @@ class ConnectionManager private constructor(private val appContext: Context) {
                     return@launch
                 }
 
-                var connectedSock: Socket? = null
-                var transportType = "wifi"
+                val targetPort = if (endpoint.port != 0 && endpoint.port != 47474) endpoint.port else CONTROL_PORT
 
-                // 1. Try USB tunnel (127.0.0.1:47471 via ADB reverse) first if configured
+                // 1. Try USB reverse tunnel first
+                var connectedSock: Socket? = null
+                var transportType: String? = null
+
                 try {
-                    val s = Socket()
-                    s.tcpNoDelay = true
-                    s.keepAlive = true
-                    s.connect(InetSocketAddress("127.0.0.1", CONTROL_USB_PORT), 1500)
-                    if (performHandshake(s, deviceId)) {
-                        connectedSock = s
+                    val usbSock = Socket()
+                    usbSock.tcpNoDelay = true
+                    usbSock.keepAlive = true
+                    usbSock.connect(InetSocketAddress("127.0.0.1", CONTROL_USB_PORT), 400)
+                    if (performHandshake(usbSock, deviceId)) {
+                        connectedSock = usbSock
                         transportType = "usb"
-                        Log.i(tag, "[DIAG] [CONNECT_OK] Connected via USB tunnel to $deviceId")
+                        Log.i(tag, "[DIAG] [CONNECT_OK] Connected via usb to $deviceId")
                     } else {
-                        s.close()
+                        try { usbSock.close() } catch (e: Exception) {}
                     }
                 } catch (e: Exception) {
-                    Log.d(tag, "USB tunnel connect attempt failed: ${e.message}")
+                    // USB not available, fallback immediately to Wi-Fi
                 }
 
-                // 2. Try Wi-Fi addresses if USB not connected
+                // 2. If USB did not connect, try Wi-Fi candidates
                 if (connectedSock == null) {
-                    val targetPort = if (endpoint.port != 0 && endpoint.port != 47474) endpoint.port else CONTROL_PORT
-                    for (addr in endpoint.addrs) {
-                        if (addr.startsWith("127.")) continue
-                        try {
-                            val s = Socket()
-                            s.tcpNoDelay = true
-                            s.keepAlive = true
-                            s.connect(InetSocketAddress(addr, targetPort), 2500)
-                            if (performHandshake(s, deviceId)) {
-                                connectedSock = s
-                                transportType = "wifi"
-                                Log.i(tag, "[DIAG] [CONNECT_OK] Connected via Wi-Fi to $deviceId ($addr:$targetPort)")
-                                break
-                            } else {
-                                s.close()
+                    val wifiAddrs = endpoint.addrs.filter { !it.startsWith("127.") && !it.startsWith("169.254.") }
+                    if (wifiAddrs.isNotEmpty()) {
+                        val winner = CompletableDeferred<Pair<Socket, String>?>()
+                        val candidateJobs = mutableListOf<Job>()
+                        wifiAddrs.forEach { addr ->
+                            val job = launch(Dispatchers.IO) {
+                                var s: Socket? = null
+                                try {
+                                    s = Socket()
+                                    s.tcpNoDelay = true
+                                    s.keepAlive = true
+                                    s.connect(InetSocketAddress(addr, targetPort), 3000)
+                                    if (performHandshake(s, deviceId)) {
+                                        if (winner.complete(Pair(s, "wifi"))) {
+                                            Log.i(tag, "[DIAG] [CONNECT_OK] Connected via wifi to $deviceId ($addr:$targetPort)")
+                                            return@launch
+                                        }
+                                    }
+                                    try { s.close() } catch (e: Exception) {}
+                                } catch (e: Exception) {
+                                    try { s?.close() } catch (ex: Exception) {}
+                                }
                             }
+                            candidateJobs.add(job)
+                        }
+
+                        launch {
+                            candidateJobs.forEach { it.join() }
+                            if (!winner.isCompleted) {
+                                winner.complete(null)
+                            }
+                        }
+
+                        val win = try {
+                            withTimeoutOrNull(4000L) { winner.await() }
                         } catch (e: Exception) {
-                            Log.d(tag, "Wi-Fi connect attempt to $addr:$targetPort failed: ${e.message}")
+                            null
+                        }
+                        if (win != null) {
+                            connectedSock = win.first
+                            transportType = win.second
                         }
                     }
                 }
 
-                if (connectedSock != null) {
+                val winningResult = if (connectedSock != null && transportType != null) Pair(connectedSock, transportType) else null
+
+                if (winningResult != null) {
+                    val (connectedSock, transportType) = winningResult
                     var wasAlreadyHealthy = false
                     synchronized(activeSessions) {
                         val active = activeSessions[deviceId]
@@ -579,9 +738,19 @@ class ConnectionManager private constructor(private val appContext: Context) {
                             wasAlreadyHealthy = true
                         } else {
                             active?.close("replaced_by_outgoing")
-                            val session = ActiveSession(connectedSock, deviceId, transportType, scope, ::onSessionClosed, tag)
+                            val session = ActiveSession(connectedSock, deviceId, transportType, scope, ::onSessionClosed, ::onReceiveOfferReceived, tag)
                             activeSessions[deviceId] = session
                             session.start()
+                            currentLocalReceiveOffer?.let { offerUri ->
+                                val localId = pairingManager.getLocalIdentity()
+                                val offer = JSONObject().apply {
+                                    put("type", "RECEIVE_OFFER")
+                                    put("uri", offerUri)
+                                    put("device_id", localId.deviceId)
+                                    put("ts", System.currentTimeMillis())
+                                }
+                                session.sendMsg(offer)
+                            }
                         }
                     }
 
@@ -599,11 +768,12 @@ class ConnectionManager private constructor(private val appContext: Context) {
                 } else {
                     if (isDeviceConnected(deviceId)) {
                         Log.i(tag, "[DIAG] [CONNECT_CONCURRENT] Outgoing attempt failed but active session exists for $deviceId")
+                        notifyConnected(onConnected)
                     } else {
                         pairingManager.updateConnectionState(deviceId, ConnectionState.DISCONNECTED)
-                        Log.i(tag, "[DIAG] [DISCONNECTED] Could not connect to ${dev.identity.name}")
-                        notifyFailed(onFailed, "Could not establish connection to device endpoints")
+                        Log.i(tag, "[DIAG] [DISCONNECTED] Could not establish connection to ${dev.identity.name}")
                         refreshDevicesList()
+                        notifyFailed(onFailed, "Could not establish connection to device endpoints")
                     }
                 }
             } finally {
@@ -757,6 +927,7 @@ class ConnectionManager private constructor(private val appContext: Context) {
         val transportType: String,
         val scope: CoroutineScope,
         val onClosed: (ActiveSession, String) -> Unit,
+        val onReceiveOffer: (String, String) -> Unit,
         val tag: String
     ) {
         @Volatile var isRunning = true
@@ -879,6 +1050,12 @@ class ConnectionManager private constructor(private val appContext: Context) {
                     lastPongTime = now
                     missedPongs = 0
                     Log.d(tag, "[DIAG] [PONG_RCVD] Received pong from $deviceId")
+                }
+                "RECEIVE_OFFER" -> {
+                    val uri = msg.optString("uri")
+                    if (uri.isNotEmpty()) {
+                        onReceiveOffer(deviceId, uri)
+                    }
                 }
                 "DISCONNECT" -> {
                     Log.i(tag, "[DIAG] [DISCONNECTED] Peer requested disconnect $deviceId")

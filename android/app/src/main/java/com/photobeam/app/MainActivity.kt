@@ -24,6 +24,7 @@ import com.photobeam.app.ui.theme.PhotoBeamTheme
 
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.LaunchedEffect
 import android.util.Log
@@ -152,6 +153,9 @@ fun PhotoBeamApp(
 ) {
     val navController = rememberNavController()
 
+    // Mutable so the HomeScreen can inject URIs picked from the file picker
+    var activeSharedUris by remember(initialSharedUris) { mutableStateOf(initialSharedUris) }
+
     LaunchedEffect(initialScreen, initialQrUri) {
         if (initialScreen != null) {
             navController.navigate(initialScreen) {
@@ -187,6 +191,11 @@ fun PhotoBeamApp(
             HomeScreen(
                 onNavigateReceive = { navController.navigate("receive") },
                 onNavigateSend = { navController.navigate("send") },
+                onNavigateSendWithFiles = { uris ->
+                    // Inject picked URIs then navigate to SendScreen immediately
+                    activeSharedUris = uris
+                    navController.navigate("send") { launchSingleTop = true }
+                },
                 onNavigatePair = { navController.navigate("pair") },
                 onNavigateHistory = { navController.navigate("history") },
                 onNavigateMirror = { deviceId ->
@@ -212,9 +221,13 @@ fun PhotoBeamApp(
         }
         composable("send") {
             SendScreen(
-                onBack = { navigateBackOrHome() },
+                onBack = {
+                    // Clear injected URIs when leaving send screen
+                    activeSharedUris = emptyList<Uri>()
+                    navigateBackOrHome()
+                },
                 onNavigateHistory = { navController.navigate("history") },
-                initialUris = initialSharedUris,
+                initialUris = activeSharedUris,
                 initialQrUri = initialQrUri,
             )
         }

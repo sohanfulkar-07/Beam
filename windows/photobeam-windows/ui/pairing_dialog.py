@@ -238,6 +238,8 @@ class PairingDialog(QDialog):
         )
 
         uri = encode_pairing_payload(self.current_payload)
+        import logging
+        logging.getLogger("photobeam.pairing").info("[DIAG] [PAIR_QR_URI] %s", uri)
         qr = qrcode.QRCode(
             version=None,
             error_correction=qrcode.constants.ERROR_CORRECT_M,

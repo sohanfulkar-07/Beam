@@ -70,6 +70,9 @@ def main():
             window._send._add_files(paths)
             QTimer.singleShot(1500, window._send._start_send)
 
+    if "--pair" in sys.argv:
+        QTimer.singleShot(500, window._show_pairing_dialog)
+
     window.show()
     sys.exit(app.exec())
 

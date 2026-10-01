@@ -231,6 +231,13 @@ class MainWindow(QMainWindow):
         tdp_layout.addWidget(self._top_status_text)
         tb_layout.addWidget(self._top_device_pill)
 
+        # Top Bar Connect / Disconnect Toggle Button
+        self._top_conn_toggle_btn = QPushButton(" Connect")
+        self._top_conn_toggle_btn.setObjectName("action_sm")
+        self._top_conn_toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._top_conn_toggle_btn.clicked.connect(self._on_top_conn_toggle_clicked)
+        tb_layout.addWidget(self._top_conn_toggle_btn)
+
         # Refresh action button
         refresh_action_btn = QPushButton()
         refresh_action_btn.setObjectName("action_icon_only")
@@ -446,9 +453,18 @@ class MainWindow(QMainWindow):
         if hasattr(self, "_send") and hasattr(self._send, "refresh_connection_status"):
             self._send.refresh_connection_status()
 
+    def _on_top_conn_toggle_clicked(self):
+        devices = self.connection_manager.pairing_manager.get_paired_devices()
+        connected = [d for d in devices if d.connection_state == ConnectionState.CONNECTED]
+        if connected:
+            self.connection_manager.disconnect_device(connected[0].identity.device_id)
+        elif devices:
+            self.connection_manager.connect_device(devices[0].identity.device_id)
+
     def _update_top_status(self):
         devices = self.connection_manager.pairing_manager.get_paired_devices()
         connected = [d for d in devices if d.connection_state == ConnectionState.CONNECTED]
+        connecting = [d for d in devices if d.connection_state == ConnectionState.CONNECTING]
 
         if connected:
             dev = connected[0]
@@ -457,10 +473,30 @@ class MainWindow(QMainWindow):
             self._top_status_dot.setText("🟢")
             self._top_status_dot.setStyleSheet("color: #10B981; font-size: 11px;")
             self._top_status_text.setText(f"Connected: {dev.identity.name} ({trans_str})")
+            if hasattr(self, "_top_conn_toggle_btn"):
+                self._top_conn_toggle_btn.setVisible(True)
+                self._top_conn_toggle_btn.setEnabled(True)
+                self._top_conn_toggle_btn.setText(" Disconnect")
+        elif connecting:
+            dev = connecting[0]
+            self._top_status_dot.setText("🟡")
+            self._top_status_dot.setStyleSheet("color: #F59E0B; font-size: 11px;")
+            self._top_status_text.setText(f"Connecting to {dev.identity.name}…")
+            if hasattr(self, "_top_conn_toggle_btn"):
+                self._top_conn_toggle_btn.setVisible(True)
+                self._top_conn_toggle_btn.setEnabled(False)
+                self._top_conn_toggle_btn.setText(" Connecting…")
         else:
             self._top_status_dot.setText("⚪")
             self._top_status_dot.setStyleSheet("color: #94A3B8; font-size: 11px;")
             self._top_status_text.setText("Disconnected (Scan QR to Connect)")
+            if hasattr(self, "_top_conn_toggle_btn"):
+                if devices:
+                    self._top_conn_toggle_btn.setVisible(True)
+                    self._top_conn_toggle_btn.setEnabled(True)
+                    self._top_conn_toggle_btn.setText(" Connect")
+                else:
+                    self._top_conn_toggle_btn.setVisible(False)
 
         self._top_status_text.adjustSize()
         req_width = max(240, self._top_status_text.sizeHint().width() + 55)

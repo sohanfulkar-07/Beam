@@ -168,10 +168,38 @@ fun SendScreen(
         }
     }
 
+    // Auto-connect from cached receive offer or live offer flow over active session
+    val connMgr = remember { com.photobeam.app.data.ConnectionManager.getInstance(context) }
+    LaunchedEffect(Unit) {
+        if (initialQrUri.isNullOrBlank()) {
+            val cached = connMgr.getLatestReceiveOffer()
+            if (!cached.isNullOrBlank() && cached.startsWith("photobeam://connect/")) {
+                android.util.Log.i("PhotoBeam", "Using cached receive offer from connected session: $cached")
+                startConnect(cached)
+            }
+        }
+        connMgr.receiveOfferFlow.collect { (peerId, offerUri) ->
+            if (state is SendState.Scanning && offerUri.startsWith("photobeam://connect/")) {
+                android.util.Log.i("PhotoBeam", "Received live receive offer from $peerId: $offerUri")
+                startConnect(offerUri)
+            }
+        }
+    }
+
     var autoStarted by remember { mutableStateOf(false) }
     LaunchedEffect(state) {
         val s = state
-        if (!autoStarted && s is SendState.ReadyToSend && selectedUris.isNotEmpty() && !initialQrUri.isNullOrBlank() && initialUris.isNotEmpty()) {
+        // Update notification text based on state
+        when (s) {
+            is SendState.Connecting -> com.photobeam.app.service.ConnectionForegroundService.update(context, "Connecting…")
+            is SendState.ReadyToSend -> com.photobeam.app.service.ConnectionForegroundService.update(context, "Ready to send")
+            is SendState.Sending -> com.photobeam.app.service.ConnectionForegroundService.update(
+                context, "Sending ${s.currentFile} (${(s.progress * 100).toInt()}%)"
+            )
+            is SendState.Paused -> com.photobeam.app.service.ConnectionForegroundService.update(context, "Transfer paused")
+            else -> {}
+        }
+        if (!autoStarted && s is SendState.ReadyToSend && selectedUris.isNotEmpty() && initialUris.isNotEmpty()) {
             autoStarted = true
             val conn = s.connection
             val urisCopy = selectedUris.toList()
@@ -184,10 +212,12 @@ fun SendScreen(
     }
 
     DisposableEffect(Unit) {
+        com.photobeam.app.service.ConnectionForegroundService.start(context, "Preparing transfer…")
         onDispose {
             connectJob?.cancel()
             transferJob?.cancel()
             activeConnection?.disconnectAll()
+            com.photobeam.app.service.ConnectionForegroundService.stop(context)
         }
     }
 

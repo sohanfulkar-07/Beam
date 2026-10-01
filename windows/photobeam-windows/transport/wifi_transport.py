@@ -269,16 +269,19 @@ class WiFiServer:
             raise RuntimeError("Server not started")
         deadline = time.time() + timeout
         while time.time() < deadline:
-            rem = max(0.5, deadline - time.time())
+            if not self._server_sock:
+                raise TimeoutError("Server stopped")
+            rem = min(1.0, max(0.1, deadline - time.time()))
             self._server_sock.settimeout(rem)
             try:
                 conn, addr = self._server_sock.accept()
             except (TimeoutError, socket.timeout):
-                raise TimeoutError("Accept timed out")
-            except OSError as e:
-                # If server was stopped, raise
+                if time.time() >= deadline or not self._server_sock:
+                    raise TimeoutError("Accept timed out")
+                continue
+            except OSError:
                 if not self._server_sock:
-                    raise
+                    raise TimeoutError("Server stopped")
                 raise
 
             conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -301,9 +304,18 @@ class WiFiServer:
         raise TimeoutError("Accept timed out")
 
     def stop(self) -> None:
-        if self._server_sock:
+        sock = self._server_sock
+        self._server_sock = None
+        if sock:
             try:
-                self._server_sock.close()
+                port = sock.getsockname()[1]
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(0.2)
+                s.connect_ex(("127.0.0.1", port))
+                s.close()
+            except Exception:
+                pass
+            try:
+                sock.close()
             except OSError:
                 pass
-            self._server_sock = None

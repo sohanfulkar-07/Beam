@@ -5,6 +5,8 @@ import sys
 import os
 from pathlib import Path
 import pytest
+
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
 from PyQt6.QtWidgets import QApplication
 
 # Ensure paths
@@ -28,10 +30,11 @@ def qapp():
     return app
 
 
-def test_receive_screen_state_transitions(qapp, tmp_path):
+def test_receive_screen_state_transitions(qapp, tmp_path, monkeypatch):
     screen = ReceiveScreen()
     screen._dest_dir = tmp_path
-    screen.show()
+    monkeypatch.setattr(screen, "_start_worker", lambda: None)
+    screen.setVisible(True)
 
     # 1. Ready state on shown / reset
     screen._reset_to_start()

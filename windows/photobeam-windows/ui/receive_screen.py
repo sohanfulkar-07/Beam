@@ -241,6 +241,12 @@ class ReceiverWorker(QObject):
         payload = self._session_mgr.build_qr_payload(session)
         uri = encode_qr_payload(payload)
 
+        try:
+            from connection_manager import ConnectionManager
+            ConnectionManager.get_instance().broadcast_receive_offer(uri)
+        except Exception:
+            pass
+
         qr_png = generate_qr_png_bytes(uri, box_size=8)
         self.qr_ready.emit(qr_png, uri)
         self.status.emit("Scan QR code on the sending device")
@@ -1188,6 +1194,11 @@ class ReceiveScreen(QWidget):
         self._pause_status_label.setStyleSheet("color: #4ade80; font-size: 14px; font-weight: 600;")
 
     def _stop_worker(self):
+        try:
+            from connection_manager import ConnectionManager
+            ConnectionManager.get_instance().clear_local_receive_offer()
+        except Exception:
+            pass
         if self._worker:
             self._worker.stop()
         if self._thread and self._thread.isRunning():

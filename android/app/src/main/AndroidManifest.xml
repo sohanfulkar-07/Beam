@@ -72,5 +72,10 @@
             android:foregroundServiceType="mediaProjection"
             android:exported="false"/>
 
+        <service
+            android:name=".service.ConnectionForegroundService"
+            android:foregroundServiceType="connectedDevice"
+            android:exported="false"/>
+
     </application>
 </manifest>

@@ -105,14 +105,42 @@ class DiscoveryService:
 
     def _get_local_ips(self) -> List[str]:
         ips = []
+        # 1. Probe primary outbound LAN IP directly connected to default gateway
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            primary_ip = s.getsockname()[0]
+            s.close()
+            if primary_ip and not primary_ip.startswith("127.") and not primary_ip.startswith("169.254."):
+                ips.append(primary_ip)
+        except Exception:
+            pass
+
+        # 2. Enumerate other host IPv4 addresses
         try:
             for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
                 ip = info[4][0]
-                if not ip.startswith("127.") and ip not in ips:
+                if not ip.startswith("127.") and not ip.startswith("169.254.") and ip not in ips:
                     ips.append(ip)
         except Exception:
             pass
-        if not ips:
+
+        # Prioritize RFC1918 private IPs (192.168.x, 10.x, 172.16-31.x)
+        def _ip_priority(ip_str: str) -> int:
+            if ip_str.startswith("192.168."):
+                return 0
+            if ip_str.startswith("10."):
+                return 1
+            parts = ip_str.split(".")
+            if len(parts) == 4 and parts[0] == "172" and parts[1].isdigit() and 16 <= int(parts[1]) <= 31:
+                return 2
+            return 3
+
+        if ips:
+            primary = ips[0]
+            rest = sorted(ips[1:], key=_ip_priority)
+            ips = [primary] + rest
+        else:
             ips = ["127.0.0.1"]
         return ips
 

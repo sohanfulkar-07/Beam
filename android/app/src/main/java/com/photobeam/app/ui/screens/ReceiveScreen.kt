@@ -60,7 +60,25 @@ fun ReceiveScreen(
     }
 
     DisposableEffect(Unit) {
-        onDispose { receiverJob?.cancel() }
+        com.photobeam.app.service.ConnectionForegroundService.start(context, "Waiting for sender…")
+        onDispose {
+            receiverJob?.cancel()
+            com.photobeam.app.data.ConnectionManager.getInstance(context).clearLocalReceiveOffer()
+            com.photobeam.app.service.ConnectionForegroundService.stop(context)
+        }
+    }
+
+    // Update notification text as the state changes
+    LaunchedEffect(state) {
+        when (val s = state) {
+            is ReceiveState.GeneratingQr -> com.photobeam.app.service.ConnectionForegroundService.update(context, "Generating QR code…")
+            is ReceiveState.WaitingForSender -> com.photobeam.app.service.ConnectionForegroundService.update(context, "Waiting for sender…")
+            is ReceiveState.Receiving -> com.photobeam.app.service.ConnectionForegroundService.update(
+                context, "Receiving ${s.currentFile} (${(s.overallProgress * 100).toInt()}%)"
+            )
+            is ReceiveState.Complete -> com.photobeam.app.service.ConnectionForegroundService.update(context, "Transfer complete ✓")
+            else -> {}
+        }
     }
 
     Box(
@@ -624,6 +642,11 @@ private suspend fun runReceiver(
     val payload = sessionMgr.buildQrPayload(session)
     val uri = encodeQrPayload(payload)
     android.util.Log.i("PhotoBeam", "QR_URI: $uri")
+    try {
+        com.photobeam.app.data.ConnectionManager.getInstance(context).broadcastReceiveOffer(uri)
+    } catch (e: Exception) {
+        android.util.Log.w("PhotoBeam", "Failed to broadcast receive offer: ${e.message}")
+    }
 
     val qrBitmap = generateQrBitmap(uri, 512)
     onState(ReceiveState.WaitingForSender(qrBitmap, uri))

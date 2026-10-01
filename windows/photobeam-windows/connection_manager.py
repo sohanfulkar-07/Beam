@@ -74,6 +74,7 @@ if _HAS_PYQT:
         sig_connection_state_changed = pyqtSignal(str, object)  # (device_id, ConnectionState)
         sig_device_updated = pyqtSignal(object)                 # (PairedDevice)
         sig_pairing_completed = pyqtSignal(object)              # (PairedDevice)
+        sig_receive_offer = pyqtSignal(str, str)                # (device_id, uri)
 
 def _load_module(mod_name: str, file_path: Path):
     spec = importlib.util.spec_from_file_location(mod_name, str(file_path))
@@ -122,11 +123,13 @@ class ActiveSession:
         device_id: str,
         transport_type: str,
         on_closed: Callable[[ActiveSession, str], None],  # (session, reason)
+        on_message: Optional[Callable[[ActiveSession, dict], None]] = None,
     ):
         self.sock = sock
         self.device_id = device_id
         self.transport_type = transport_type
         self.on_closed = on_closed
+        self.on_message = on_message
 
         self.last_ping_time = time.time()
         self.last_pong_time = time.time()
@@ -249,6 +252,9 @@ class ActiveSession:
             self.last_pong_time = now
             self.missed_pongs = 0
             logger.debug("[DIAG] [PONG_RCVD] Received pong from %s", self.device_id)
+        elif mtype == "RECEIVE_OFFER":
+            if self.on_message:
+                self.on_message(self, msg)
         elif mtype == "DISCONNECT":
             logger.info("[DIAG] [DISCONNECTED] Peer %s requested disconnect", self.device_id)
             self.close("peer_disconnect")
@@ -291,6 +297,9 @@ class ConnectionManager:
         self._on_pairing_request_cb: Optional[Callable[[DeviceIdentity, Callable[[bool], None]], None]] = None
         self._on_mirror_stream_cb: Optional[Callable[[str, socket.socket], None]] = None  # (device_id, sock)
 
+        self._latest_receive_offers: Dict[str, str] = {}
+        self._current_local_receive_offer: Optional[str] = None
+
         if _HAS_PYQT:
             self.signals = ConnectionSignals()
             self.sig_device_connected = self.signals.sig_device_connected
@@ -298,6 +307,7 @@ class ConnectionManager:
             self.sig_connection_state_changed = self.signals.sig_connection_state_changed
             self.sig_device_updated = self.signals.sig_device_updated
             self.sig_pairing_completed = self.signals.sig_pairing_completed
+            self.sig_receive_offer = self.signals.sig_receive_offer
         else:
             self.signals = None
             self.sig_device_connected = None
@@ -305,6 +315,7 @@ class ConnectionManager:
             self.sig_connection_state_changed = None
             self.sig_device_updated = None
             self.sig_pairing_completed = None
+            self.sig_receive_offer = None
 
         self._running = False
         self._server_sock: Optional[socket.socket] = None
@@ -635,11 +646,27 @@ class ConnectionManager:
                 transport_type = "usb" if client_ip.startswith("127.") else "wifi"
                 with self._connect_lock:
                     existing = self._active_sessions.get(remote_id)
+                    if existing and existing.is_running and (time.time() - existing.last_pong_time < 18.0):
+                        logger.info(
+                            "[DIAG] [DUPLICATE_SUPPRESSED] Active healthy session already exists for %s, closing duplicate pair socket",
+                            remote_id,
+                        )
+                        client_sock.close()
+                        return
+
                     if existing:
                         existing.close("replaced_by_pairing")
-                    session = ActiveSession(client_sock, remote_id, transport_type, self._on_session_closed)
+                    session = ActiveSession(client_sock, remote_id, transport_type, self._on_session_closed, self._on_session_message)
                     self._active_sessions[remote_id] = session
                     session.start()
+                    if self._current_local_receive_offer:
+                        local_id = self.pairing_manager.get_local_identity()
+                        session.send_msg({
+                            "type": "RECEIVE_OFFER",
+                            "uri": self._current_local_receive_offer,
+                            "device_id": local_id.device_id,
+                            "ts": int(time.time() * 1000),
+                        })
 
                 self._connecting_devices.discard(remote_id)
                 logger.info("[DIAG] [PAIR_OK] Successfully paired with %s (%s via %s)", name, remote_id, transport_type)
@@ -696,9 +723,17 @@ class ConnectionManager:
 
                 # Start active session
                 transport_type = "usb" if client_ip.startswith("127.") else "wifi"
-                session = ActiveSession(client_sock, remote_id, transport_type, self._on_session_closed)
+                session = ActiveSession(client_sock, remote_id, transport_type, self._on_session_closed, self._on_session_message)
                 self._active_sessions[remote_id] = session
                 session.start()
+                if self._current_local_receive_offer:
+                    local_id = self.pairing_manager.get_local_identity()
+                    session.send_msg({
+                        "type": "RECEIVE_OFFER",
+                        "uri": self._current_local_receive_offer,
+                        "device_id": local_id.device_id,
+                        "ts": int(time.time() * 1000),
+                    })
 
             self._connecting_devices.discard(remote_id)
             self.pairing_manager.update_connection_state(remote_id, ConnectionState.CONNECTED)
@@ -756,6 +791,45 @@ class ConnectionManager:
         self, cb: Optional[Callable[[DeviceIdentity, Callable[[bool], None]], None]]
     ) -> None:
         self._on_pairing_request_cb = cb
+
+    def _on_session_message(self, session: ActiveSession, msg: dict) -> None:
+        mtype = msg.get("type")
+        if mtype == "RECEIVE_OFFER":
+            uri = msg.get("uri", "")
+            if uri:
+                with self._connect_lock:
+                    self._latest_receive_offers[session.device_id] = uri
+                logger.info("[DIAG] [RECEIVE_OFFER_RCVD] Received offer from %s: %s", session.device_id, uri)
+                if self.signals:
+                    try:
+                        self.signals.sig_receive_offer.emit(session.device_id, uri)
+                    except Exception as e:
+                        logger.debug("Error emitting sig_receive_offer: %s", e)
+
+    def broadcast_receive_offer(self, uri: str) -> None:
+        self._current_local_receive_offer = uri
+        local_id = self.pairing_manager.get_local_identity()
+        offer = {
+            "type": "RECEIVE_OFFER",
+            "uri": uri,
+            "device_id": local_id.device_id,
+            "ts": int(time.time() * 1000),
+        }
+        with self._connect_lock:
+            for session in self._active_sessions.values():
+                session.send_msg(offer)
+        logger.info("[DIAG] [RECEIVE_OFFER_BROADCAST] Broadcasted receive offer across active sessions: %s", uri)
+
+    def clear_local_receive_offer(self) -> None:
+        self._current_local_receive_offer = None
+
+    def get_latest_receive_offer(self, device_id: Optional[str] = None) -> Optional[str]:
+        with self._connect_lock:
+            if device_id and device_id in self._latest_receive_offers:
+                return self._latest_receive_offers[device_id]
+            if self._latest_receive_offers:
+                return next(iter(self._latest_receive_offers.values()))
+        return None
 
     def _notify_device_updated(self, device: PairedDevice) -> None:
         if self.signals:
@@ -918,9 +992,17 @@ class ConnectionManager:
                         existing = self._active_sessions.get(payload.rid)
                         if existing:
                             existing.close("replaced_by_pairing")
-                        session = ActiveSession(paired_sock, payload.rid, paired_transport, self._on_session_closed)
+                        session = ActiveSession(paired_sock, payload.rid, paired_transport, self._on_session_closed, self._on_session_message)
                         self._active_sessions[payload.rid] = session
                         session.start()
+                        if self._current_local_receive_offer:
+                            local_id = self.pairing_manager.get_local_identity()
+                            session.send_msg({
+                                "type": "RECEIVE_OFFER",
+                                "uri": self._current_local_receive_offer,
+                                "device_id": local_id.device_id,
+                                "ts": int(time.time() * 1000),
+                            })
 
                     self.pairing_manager.update_connection_state(payload.rid, ConnectionState.CONNECTED)
                 else:
@@ -1052,9 +1134,17 @@ class ConnectionManager:
                         if existing:
                             existing.close("replaced_by_outgoing")
 
-                        session = ActiveSession(connected_sock, device_id, transport_type, self._on_session_closed)
+                        session = ActiveSession(connected_sock, device_id, transport_type, self._on_session_closed, self._on_session_message)
                         self._active_sessions[device_id] = session
                         session.start()
+                        if self._current_local_receive_offer:
+                            local_id = self.pairing_manager.get_local_identity()
+                            session.send_msg({
+                                "type": "RECEIVE_OFFER",
+                                "uri": self._current_local_receive_offer,
+                                "device_id": local_id.device_id,
+                                "ts": int(time.time() * 1000),
+                            })
 
                     self.pairing_manager.update_connection_state(device_id, ConnectionState.CONNECTED)
 
