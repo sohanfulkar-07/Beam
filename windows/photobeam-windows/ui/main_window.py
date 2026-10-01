@@ -1,19 +1,20 @@
 """
-PhotoBeam Windows UI — Main Window (Neo-Tactile Desktop Dashboard)
+PhotoBeam Windows UI — Main Window (Reference 2 Dashboard Architecture)
 
-Implements Reference 2 Dashboard architecture:
-- Left sidebar with branding, navigation items, and local identity card
-- Top bar with dynamic breadcrumbs, live device presence badge, and quick pair action
-- Central workspace with smooth switching between Dashboard, Send, Receive, Activity, and Mirror
+Implements Reference 2 Desktop Dashboard:
+- Fixed 220px left sidebar with vector icons, vertical alignment, and local machine identity
+- Sleek 60px top bar with breadcrumbs, dynamic connection status pill, and primary Pair action
+- Seamless workspace stack coordinating Dashboard, Send, Receive, History, and Screen Mirror
 """
 from __future__ import annotations
 
 import os
 import sys
 from pathlib import Path
+from typing import Optional
 
 from PyQt6.QtCore import QSize, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QIcon, QPalette
+from PyQt6.QtGui import QColor, QFont, QIcon
 from PyQt6.QtWidgets import (
     QApplication,
     QFrame,
@@ -21,7 +22,6 @@ from PyQt6.QtWidgets import (
     QLabel,
     QMainWindow,
     QPushButton,
-    QScrollArea,
     QSizePolicy,
     QSpacerItem,
     QStackedWidget,
@@ -49,6 +49,7 @@ except (ImportError, ValueError):
 try:
     from .history_screen import HistoryScreen
     from .home_screen import HomeScreen
+    from .icons import get_icon, get_pixmap
     from .pairing_dialog import PairingDialog
     from .receive_screen import ReceiveScreen
     from .screen_viewer import ScreenViewer
@@ -57,6 +58,7 @@ try:
 except (ImportError, ValueError):
     from history_screen import HistoryScreen
     from home_screen import HomeScreen
+    from icons import get_icon, get_pixmap
     from pairing_dialog import PairingDialog
     from receive_screen import ReceiveScreen
     from screen_viewer import ScreenViewer
@@ -64,154 +66,188 @@ except (ImportError, ValueError):
     from styles import STYLESHEET
 
 
-
 class MainWindow(QMainWindow):
     """PhotoBeam modern desktop dashboard main window."""
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("PhotoBeam — Peer-to-Peer Transfer")
-        self.setMinimumSize(960, 640)
-        self.resize(1120, 750)
+        self.setWindowTitle("PhotoBeam")
+        self.setMinimumSize(1000, 680)
+        self.resize(1366, 768)
 
         self.setStyleSheet(STYLESHEET)
         self.connection_manager = ConnectionManager.get_instance()
         self.connection_manager.start()
         self.connection_manager.add_device_updated_callback(self._on_device_updated_bg)
 
-        # Main Layout: Left Sidebar + Right Content Workspace
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-        self._root_layout = QHBoxLayout(central_widget)
-        self._root_layout.setContentsMargins(0, 0, 0, 0)
-        self._root_layout.setSpacing(0)
+        # Central container
+        central = QWidget()
+        self.setCentralWidget(central)
+        root_layout = QHBoxLayout(central)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
 
-        # ── Left Navigation Sidebar ──────────────────────────────────────────
+        # ── 1. Left Sidebar (Fixed 220px) ─────────────────────────────────────
         self._sidebar = QFrame()
         self._sidebar.setObjectName("sidebar")
-        self._sidebar_layout = QVBoxLayout(self._sidebar)
-        self._sidebar_layout.setContentsMargins(18, 24, 18, 20)
-        self._sidebar_layout.setSpacing(12)
+        s_layout = QVBoxLayout(self._sidebar)
+        s_layout.setContentsMargins(16, 20, 16, 18)
+        s_layout.setSpacing(8)
 
         # Brand header
         brand_row = QHBoxLayout()
-        brand_row.setSpacing(12)
-        brand_icon = QLabel("⚡")
-        brand_icon.setStyleSheet("font-size: 26px; color: #38BDF8;")
+        brand_row.setSpacing(10)
+        brand_icon_lbl = QLabel()
+        brand_icon_lbl.setPixmap(get_pixmap("logo", "#38BDF8", 22))
+        brand_row.addWidget(brand_icon_lbl)
+
         brand_text_box = QVBoxLayout()
-        brand_text_box.setSpacing(1)
+        brand_text_box.setSpacing(0)
         brand_name = QLabel("PhotoBeam")
-        brand_name.setObjectName("sidebar_logo_text")
+        brand_name.setObjectName("sidebar_brand_title")
         brand_sub = QLabel("PEER-TO-PEER")
-        brand_sub.setObjectName("sidebar_logo_sub")
+        brand_sub.setObjectName("sidebar_brand_sub")
         brand_text_box.addWidget(brand_name)
         brand_text_box.addWidget(brand_sub)
-        brand_row.addWidget(brand_icon)
         brand_row.addLayout(brand_text_box)
         brand_row.addStretch()
-        self._sidebar_layout.addLayout(brand_row)
-        self._sidebar_layout.addSpacing(16)
+        s_layout.addLayout(brand_row)
 
-        # Navigation buttons
+        s_layout.addSpacing(20)
+
+        # Navigation menu
         self._nav_buttons: list[tuple[QPushButton, int, str]] = []
 
-        self._btn_home = self._create_nav_button("🏠  Dashboard", 0, "Dashboard")
-        self._btn_send = self._create_nav_button("📤  Send Files", 2, "Send Files")
-        self._btn_receive = self._create_nav_button("📥  Receive Files", 1, "Receive Files")
-        self._btn_history = self._create_nav_button("📜  Activity", 3, "Activity")
+        self._btn_home = self._create_nav_item("Dashboard", "dashboard", 0)
+        self._btn_send = self._create_nav_item("Send Files", "send", 2)
+        self._btn_receive = self._create_nav_item("Receive Files", "receive", 1)
+        self._btn_history = self._create_nav_item("Activity", "activity", 3)
 
-        self._sidebar_layout.addWidget(self._btn_home)
-        self._sidebar_layout.addWidget(self._btn_send)
-        self._sidebar_layout.addWidget(self._btn_receive)
-        self._sidebar_layout.addWidget(self._btn_history)
+        s_layout.addWidget(self._btn_home)
+        s_layout.addWidget(self._btn_send)
+        s_layout.addWidget(self._btn_receive)
+        s_layout.addWidget(self._btn_history)
 
-        self._sidebar_layout.addStretch(1)
+        s_layout.addStretch(1)
 
-        # Sidebar Bottom: Local Machine Identity & Pair Action
+        # Sidebar Bottom Section: Settings & Local Machine Identity
+        self._btn_settings = QPushButton(" Settings")
+        self._btn_settings.setIcon(get_icon("settings", "#94A3B8", "#F8FAFC", 16))
+        self._btn_settings.setObjectName("nav_btn")
+        self._btn_settings.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn_settings.clicked.connect(self._on_settings_clicked)
+        s_layout.addWidget(self._btn_settings)
+
+        s_layout.addSpacing(6)
+
+        # Local Device Identity Card
         local_card = QFrame()
-        local_card.setObjectName("sidebar_device_card")
-        local_layout = QVBoxLayout(local_card)
-        local_layout.setContentsMargins(12, 12, 12, 12)
-        local_layout.setSpacing(6)
+        local_card.setObjectName("sidebar_identity_card")
+        lc_layout = QVBoxLayout(local_card)
+        lc_layout.setContentsMargins(10, 10, 10, 10)
+        lc_layout.setSpacing(4)
 
+        lc_top = QHBoxLayout()
+        lc_top.setSpacing(8)
+        laptop_icon = QLabel()
+        laptop_icon.setPixmap(get_pixmap("device_laptop", "#38BDF8", 16))
         local_id = self.connection_manager.pairing_manager.get_local_identity()
-        self._sidebar_local_name = QLabel(f"💻 {local_id.name}")
-        self._sidebar_local_name.setStyleSheet("font-weight: 700; color: #FFFFFF; font-size: 13px;")
-        local_layout.addWidget(self._sidebar_local_name)
+        self._lbl_local_name = QLabel(local_id.name)
+        self._lbl_local_name.setStyleSheet("font-weight: 700; color: #F8FAFC; font-size: 12px;")
+        lc_top.addWidget(laptop_icon)
+        lc_top.addWidget(self._lbl_local_name)
+        lc_top.addStretch()
+        lc_layout.addLayout(lc_top)
 
-        self._sidebar_local_status = QLabel("● Ready (Discoverable)")
-        self._sidebar_local_status.setStyleSheet("color: #10B981; font-size: 11px; font-weight: 600;")
-        local_layout.addWidget(self._sidebar_local_status)
+        self._lbl_local_status = QLabel("● Ready (Discoverable)")
+        self._lbl_local_status.setStyleSheet("color: #10B981; font-size: 11px; font-weight: 600; padding-left: 24px;")
+        lc_layout.addWidget(self._lbl_local_status)
 
-        pair_quick_btn = QPushButton("➕ Pair Device")
-        pair_quick_btn.setObjectName("action_primary_sm")
-        pair_quick_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        pair_quick_btn.clicked.connect(self._show_pairing_dialog)
-        local_layout.addWidget(pair_quick_btn)
+        s_layout.addWidget(local_card)
 
-        self._sidebar_layout.addWidget(local_card)
+        root_layout.addWidget(self._sidebar)
 
-        self._root_layout.addWidget(self._sidebar)
+        # ── 2. Right Workspace Area ──────────────────────────────────────────
+        main_workspace = QWidget()
+        mw_layout = QVBoxLayout(main_workspace)
+        mw_layout.setContentsMargins(0, 0, 0, 0)
+        mw_layout.setSpacing(0)
 
-        # ── Right Main Area ──────────────────────────────────────────────────
-        self._main_area = QWidget()
-        self._main_layout = QVBoxLayout(self._main_area)
-        self._main_layout.setContentsMargins(0, 0, 0, 0)
-        self._main_layout.setSpacing(0)
-
-        # Top Bar
+        # Top Bar (Fixed 60px height)
         self._topbar = QFrame()
         self._topbar.setObjectName("topbar")
-        self._topbar_layout = QHBoxLayout(self._topbar)
-        self._topbar_layout.setContentsMargins(28, 14, 28, 14)
-        self._topbar_layout.setSpacing(16)
+        tb_layout = QHBoxLayout(self._topbar)
+        tb_layout.setContentsMargins(32, 0, 32, 0)
+        tb_layout.setSpacing(16)
 
         # Breadcrumbs
-        breadcrumb_box = QHBoxLayout()
-        breadcrumb_box.setSpacing(6)
+        bc_layout = QHBoxLayout()
+        bc_layout.setSpacing(6)
+        bc_icon = QLabel()
+        bc_icon.setPixmap(get_pixmap("logo", "#64748B", 14))
         bc_root = QLabel("PhotoBeam  /")
-        bc_root.setObjectName("breadcrumb")
+        bc_root.setObjectName("breadcrumb_root")
         self._bc_active = QLabel("Dashboard")
         self._bc_active.setObjectName("breadcrumb_active")
-        breadcrumb_box.addWidget(bc_root)
-        breadcrumb_box.addWidget(self._bc_active)
-        self._topbar_layout.addLayout(breadcrumb_box)
+        bc_layout.addWidget(bc_icon)
+        bc_layout.addWidget(bc_root)
+        bc_layout.addWidget(self._bc_active)
+        tb_layout.addLayout(bc_layout)
 
-        self._topbar_layout.addStretch(1)
+        tb_layout.addStretch(1)
 
-        # Live presence pill
-        self._top_status_badge = QLabel("○ Standby")
-        self._top_status_badge.setObjectName("badge_gray")
-        self._topbar_layout.addWidget(self._top_status_badge)
+        # Connected Device Pill
+        self._top_device_pill = QFrame()
+        self._top_device_pill.setObjectName("top_device_pill")
+        tdp_layout = QHBoxLayout(self._top_device_pill)
+        tdp_layout.setContentsMargins(10, 5, 10, 5)
+        tdp_layout.setSpacing(8)
+        self._top_status_dot = QLabel("●")
+        self._top_status_dot.setStyleSheet("color: #94A3B8; font-size: 11px;")
+        self._top_status_text = QLabel("Standby (Discoverable)")
+        self._top_status_text.setStyleSheet("color: #E2E8F0; font-size: 12px; font-weight: 600;")
+        tdp_layout.addWidget(self._top_status_dot)
+        tdp_layout.addWidget(self._top_status_text)
+        tb_layout.addWidget(self._top_device_pill)
 
-        # Quick Pair button
-        self._top_pair_btn = QPushButton("➕ Pair New Device")
-        self._top_pair_btn.setObjectName("action_primary_sm")
+        # Refresh action button
+        refresh_action_btn = QPushButton()
+        refresh_action_btn.setObjectName("action_icon_only")
+        refresh_action_btn.setIcon(get_icon("refresh", "#94A3B8", "#38BDF8", 16))
+        refresh_action_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        refresh_action_btn.setToolTip("Refresh connection and device presence")
+        refresh_action_btn.clicked.connect(self._refresh_current_view)
+        tb_layout.addWidget(refresh_action_btn)
+
+        # Primary Pair Button
+        self._top_pair_btn = QPushButton(" Pair New Device")
+        self._top_pair_btn.setIcon(get_icon("plus", "#FFFFFF", "#FFFFFF", 14))
+        self._top_pair_btn.setObjectName("primary")
         self._top_pair_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._top_pair_btn.clicked.connect(self._show_pairing_dialog)
-        self._topbar_layout.addWidget(self._top_pair_btn)
+        tb_layout.addWidget(self._top_pair_btn)
 
-        self._main_layout.addWidget(self._topbar)
+        mw_layout.addWidget(self._topbar)
 
-        # Central Stacked Widget
+        # ── 3. Central Stacked Screens ───────────────────────────────────────
         self._stack = QStackedWidget()
-        self._main_layout.addWidget(self._stack, 1)
+        mw_layout.addWidget(self._stack, 1)
 
-        self._root_layout.addWidget(self._main_area, 1)
+        root_layout.addWidget(main_workspace, 1)
 
-        # ── Screens ──────────────────────────────────────────────────────────
+        # Screen instances
         self._home = HomeScreen(self.connection_manager)
         self._receive = ReceiveScreen()
         self._send = SendScreen()
         self._history = HistoryScreen()
         self._viewer: ScreenViewer | None = None
 
-        self._stack.addWidget(self._home)     # index 0
-        self._stack.addWidget(self._receive)  # index 1
-        self._stack.addWidget(self._send)     # index 2
-        self._stack.addWidget(self._history)  # index 3
+        self._stack.addWidget(self._home)     # 0: Dashboard
+        self._stack.addWidget(self._receive)  # 1: Receive
+        self._stack.addWidget(self._send)     # 2: Send
+        self._stack.addWidget(self._history)  # 3: Activity
 
-        # Connect Navigation Signals
+        # Navigation connections
         self._home.go_receive.connect(self._show_receive)
         self._home.go_send.connect(self._show_send)
         self._home.go_history.connect(self._show_history)
@@ -230,16 +266,17 @@ class MainWindow(QMainWindow):
         self._show_home()
         self._update_top_status()
 
-    def _create_nav_button(self, label: str, target_idx: int, breadcrumb: str) -> QPushButton:
-        btn = QPushButton(label)
+    def _create_nav_item(self, label: str, icon_name: str, target_idx: int) -> QPushButton:
+        btn = QPushButton(f" {label}")
+        btn.setIcon(get_icon(icon_name, "#94A3B8", "#38BDF8", 16))
         btn.setObjectName("nav_btn")
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setProperty("active", "false")
-        btn.clicked.connect(lambda: self._navigate_to(target_idx, breadcrumb))
-        self._nav_buttons.append((btn, target_idx, breadcrumb))
+        btn.clicked.connect(lambda: self._navigate_to(target_idx, label))
+        self._nav_buttons.append((btn, target_idx, label))
         return btn
 
-    def _navigate_to(self, index: int, breadcrumb: str):
+    def _navigate_to(self, index: int, label: str):
         if index == 0:
             self._show_home()
         elif index == 1:
@@ -249,8 +286,8 @@ class MainWindow(QMainWindow):
         elif index == 3:
             self._show_history()
 
-    def _set_active_nav(self, target_idx: int, breadcrumb: str):
-        self._bc_active.setText(breadcrumb)
+    def _set_active_nav(self, target_idx: int, label: str):
+        self._bc_active.setText(label)
         for btn, idx, _ in self._nav_buttons:
             is_active = (idx == target_idx)
             btn.setProperty("active", "true" if is_active else "false")
@@ -301,6 +338,20 @@ class MainWindow(QMainWindow):
         self._home.refresh_devices()
         self._update_top_status()
 
+    def _refresh_current_view(self):
+        idx = self._stack.currentIndex()
+        if idx == 0:
+            self._home.refresh_devices()
+        elif idx == 3:
+            if hasattr(self._history, "refresh"):
+                self._history.refresh()
+            elif hasattr(self._history, "on_shown"):
+                self._history.on_shown()
+        self._update_top_status()
+
+    def _on_settings_clicked(self):
+        self._show_pairing_dialog()
+
     def _show_mirror(self, device_id: str):
         dev = self.connection_manager.pairing_manager.get_paired_device(device_id)
         dev_name = dev.identity.name if dev else "Android Device"
@@ -329,20 +380,21 @@ class MainWindow(QMainWindow):
         discovered = [d for d in devices if d.presence_state == PresenceState.DISCOVERED]
 
         if connected:
-            self._top_status_badge.setText(f"🟢 Connected: {connected[0].identity.name}")
-            self._top_status_badge.setObjectName("badge_green")
+            self._top_status_dot.setText("●")
+            self._top_status_dot.setStyleSheet("color: #10B981; font-size: 11px;")
+            self._top_status_text.setText(f"{connected[0].identity.name} (Connected)")
         elif discovered:
-            self._top_status_badge.setText(f"🟡 {discovered[0].identity.name} (Online)")
-            self._top_status_badge.setObjectName("badge_cyan")
+            self._top_status_dot.setText("●")
+            self._top_status_dot.setStyleSheet("color: #38BDF8; font-size: 11px;")
+            self._top_status_text.setText(f"{discovered[0].identity.name} (Online)")
         elif devices:
-            self._top_status_badge.setText(f"⚪ {len(devices)} Paired Device(s)")
-            self._top_status_badge.setObjectName("badge_gray")
+            self._top_status_dot.setText("●")
+            self._top_status_dot.setStyleSheet("color: #94A3B8; font-size: 11px;")
+            self._top_status_text.setText(f"{len(devices)} Paired Device(s)")
         else:
-            self._top_status_badge.setText("○ Standby (Discoverable)")
-            self._top_status_badge.setObjectName("badge_gray")
-
-        self._top_status_badge.style().unpolish(self._top_status_badge)
-        self._top_status_badge.style().polish(self._top_status_badge)
+            self._top_status_dot.setText("○")
+            self._top_status_dot.setStyleSheet("color: #64748B; font-size: 11px;")
+            self._top_status_text.setText("Standby (Discoverable)")
 
     def _on_device_updated_bg(self, dev):
         from PyQt6.QtCore import QTimer

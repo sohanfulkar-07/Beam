@@ -89,11 +89,11 @@ class PairingDialog(QDialog):
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         title = QLabel("Pair New Device")
-        title.setObjectName("heading")
+        title.setObjectName("dash_heading")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         subtitle = QLabel("Scan this QR code with the PhotoBeam app on your Android device")
-        subtitle.setObjectName("subtitle")
+        subtitle.setObjectName("muted_text")
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
         subtitle.setWordWrap(True)
 
@@ -105,39 +105,39 @@ class PairingDialog(QDialog):
         self.qr_label.setObjectName("qr_label")
         self.qr_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.qr_label.setFixedSize(260, 260)
-        self.qr_label.setStyleSheet("background: #ffffff; border-radius: 12px; padding: 10px;")
+        self.qr_label.setStyleSheet("background: #ffffff; border-radius: 14px; padding: 12px;")
         layout.addWidget(self.qr_label, alignment=Qt.AlignmentFlag.AlignCenter)
 
         # Instructions / Fallback
         or_label = QLabel("— OR PAIR MANUALLY —")
-        or_label.setObjectName("info")
+        or_label.setObjectName("muted_text")
         or_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(or_label)
 
         manual_row = QHBoxLayout()
         self.code_input = QLineEdit()
         self.code_input.setPlaceholderText("Paste photobeam://pair/... code here")
-        self.code_input.setStyleSheet(
-            "background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 8px; color: #fff;"
-        )
 
-        pair_btn = QPushButton("Pair")
+        pair_btn = QPushButton(" Pair")
         pair_btn.setObjectName("action_primary_sm")
+        pair_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         pair_btn.clicked.connect(self._on_manual_pair_clicked)
         manual_row.addWidget(self.code_input)
         manual_row.addWidget(pair_btn)
         layout.addLayout(manual_row)
 
         self.status_label = QLabel("")
-        self.status_label.setObjectName("info")
+        self.status_label.setObjectName("muted_text")
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.status_label)
 
         # Close button
         close_btn = QPushButton("Close")
         close_btn.setObjectName("secondary")
+        close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         close_btn.clicked.connect(self.close)
         layout.addWidget(close_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+
 
         scroll.setWidget(container)
         main_layout.addWidget(scroll)

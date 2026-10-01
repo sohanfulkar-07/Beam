@@ -1,11 +1,13 @@
 """
-PhotoBeam Windows UI — Unified Connect Home Screen (Reference 2 Dashboard)
+PhotoBeam Windows UI — Dashboard Home Screen (Reference 2 Implementation)
 
-Redesigned as a modern dark-blue dashboard:
-- Top Hero banner ("Make Transfers Simple !")
-- Left column: Trusted Devices list with live presence, glowing rings, and tactile per-device actions
-- Right column: Fast Dropzone (drag & drop files) and Security & Engine activity panel
-- Preserves all attributes required by unit tests and pairing/transfer flows.
+Faithfully implements Reference 2:
+- Clean overview header ("Make Transfers Simple !") with subtitle and filter pills
+- Left / Main Column: Paired devices with vector icons, live presence, and clean action buttons
+- Right Column:
+  - Local Machine status card with direct QR code action
+  - Fast Send Dropzone with drag & drop support and vector file-type icons
+  - Real transfer activity & metrics powered by HistoryManager
 """
 from __future__ import annotations
 
@@ -23,6 +25,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QInputDialog,
     QLabel,
+    QLayout,
     QMenu,
     QMessageBox,
     QPushButton,
@@ -51,12 +54,27 @@ except (ImportError, ValueError):
     from ..connection_manager import ConnectionManager
 
 try:
+    from history_manager import HistoryManager, TransferRecord
+except ImportError:
+    from ..history_manager import HistoryManager, TransferRecord
+
+try:
+    from .icons import get_icon, get_pixmap
     from .pairing_dialog import PairingDialog
 except (ImportError, ValueError):
-    try:
-        from ui.pairing_dialog import PairingDialog
-    except (ImportError, ValueError):
-        from pairing_dialog import PairingDialog
+    from icons import get_icon, get_pixmap
+    from pairing_dialog import PairingDialog
+
+
+def format_bytes(b: int) -> str:
+    if b < 1024:
+        return f"{b} B"
+    elif b < 1024 * 1024:
+        return f"{b / 1024:.1f} KB"
+    elif b < 1024 * 1024 * 1024:
+        return f"{b / (1024 * 1024):.1f} MB"
+    else:
+        return f"{b / (1024 * 1024 * 1024):.2f} GB"
 
 
 class HomeScreen(QWidget):
@@ -71,65 +89,70 @@ class HomeScreen(QWidget):
         super().__init__()
         self.connection_manager = connection_manager or ConnectionManager.get_instance()
         self.pairing_manager = self.connection_manager.pairing_manager
+        self.history_manager = HistoryManager.get_instance()
 
         self.setAcceptDrops(True)
         self.connection_manager.add_device_updated_callback(self._on_device_updated_from_bg)
+        self._filter_mode = "all"  # "all" or "online"
+
         self._build_ui()
 
     def _build_ui(self):
         root = QVBoxLayout(self)
-        root.setContentsMargins(28, 20, 28, 24)
-        root.setSpacing(18)
+        root.setContentsMargins(32, 24, 32, 24)
+        root.setSpacing(20)
 
-        # ── Hero Banner (Reference 2 Inspiration) ────────────────────────────
-        hero_card = QFrame()
-        hero_card.setObjectName("hero_card")
-        hero_layout = QHBoxLayout(hero_card)
-        hero_layout.setContentsMargins(24, 20, 24, 20)
-        hero_layout.setSpacing(20)
+        # ── 1. Compact Overview Header (Reference 2) ──────────────────────────
+        header_row = QHBoxLayout()
+        header_row.setSpacing(16)
 
-        hero_text_box = QVBoxLayout()
-        hero_text_box.setSpacing(6)
-        hero_title = QLabel("Make Transfers Simple !")
-        hero_title.setObjectName("hero_title")
-        hero_sub = QLabel("Direct peer-to-peer transfer between Windows & Android with zero cloud exposure.")
-        hero_sub.setObjectName("subtitle")
-        hero_sub.setWordWrap(True)
-        hero_text_box.addWidget(hero_title)
-        hero_text_box.addWidget(hero_sub)
-        hero_layout.addLayout(hero_text_box, stretch=1)
+        title_box = QVBoxLayout()
+        title_box.setSpacing(4)
+        h_title = QLabel("Make Transfers Simple !")
+        h_title.setObjectName("dash_heading")
+        h_sub = QLabel("Fast, peer-to-peer encrypted file transfer directly between your devices.")
+        h_sub.setObjectName("dash_sub")
+        title_box.addWidget(h_title)
+        title_box.addWidget(h_sub)
+        header_row.addLayout(title_box)
 
-        hero_layout.addStretch(1)
+        header_row.addStretch(1)
 
-        # Quick feature badges inside hero
-        pill_row = QHBoxLayout()
-        pill_row.setSpacing(8)
-        pill_p2p = QLabel("🔒 100% P2P")
-        pill_p2p.setObjectName("transport_pill")
-        pill_e2e = QLabel("🛡️ E2E Encrypted")
-        pill_e2e.setObjectName("transport_pill")
-        pill_multi = QLabel("⚡ Multipath Ready")
-        pill_multi.setObjectName("transport_pill")
-        pill_row.addWidget(pill_p2p)
-        pill_row.addWidget(pill_e2e)
-        pill_row.addWidget(pill_multi)
-        hero_layout.addLayout(pill_row)
+        # Filter Pills Bar (Reference 2 style)
+        filter_bar = QHBoxLayout()
+        filter_bar.setSpacing(8)
 
-        root.addWidget(hero_card)
+        self._pill_all = QPushButton("All Devices")
+        self._pill_all.setObjectName("filter_pill")
+        self._pill_all.setProperty("active", "true")
+        self._pill_all.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._pill_all.clicked.connect(lambda: self._set_filter("all"))
 
-        # ── Two-Column Main Workspace ─────────────────────────────────────────
-        workspace_layout = QHBoxLayout()
-        workspace_layout.setSpacing(20)
+        self._pill_online = QPushButton("Online")
+        self._pill_online.setObjectName("filter_pill")
+        self._pill_online.setProperty("active", "false")
+        self._pill_online.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._pill_online.clicked.connect(lambda: self._set_filter("online"))
 
-        # ── Left Column: Trusted Devices (~62% width) ─────────────────────────
+        filter_bar.addWidget(self._pill_all)
+        filter_bar.addWidget(self._pill_online)
+        header_row.addLayout(filter_bar)
+
+        root.addLayout(header_row)
+
+        # ── 2. Two-Column Workspace Grid ──────────────────────────────────────
+        grid_layout = QHBoxLayout()
+        grid_layout.setSpacing(24)
+
+        # ── Left / Main Column (~63% width) ───────────────────────────────────
         left_col = QVBoxLayout()
-        left_col.setSpacing(12)
+        left_col.setSpacing(14)
 
-        # Section Header
+        # Section Title Row
         sec_header = QHBoxLayout()
         sec_header.setSpacing(10)
-        sec_title = QLabel("Trusted Devices")
-        sec_title.setObjectName("heading")
+        sec_title = QLabel("Paired Devices")
+        sec_title.setObjectName("section_heading")
         sec_header.addWidget(sec_title)
 
         self._device_count_badge = QLabel("0 Devices")
@@ -138,139 +161,176 @@ class HomeScreen(QWidget):
 
         sec_header.addStretch(1)
 
-        refresh_btn = QPushButton("🔄 Refresh")
+        refresh_btn = QPushButton(" Refresh")
+        refresh_btn.setIcon(get_icon("refresh", "#94A3B8", "#FFFFFF", 13))
         refresh_btn.setObjectName("action_sm")
         refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         refresh_btn.clicked.connect(self.refresh_devices)
         sec_header.addWidget(refresh_btn)
 
-        pair_top_btn = QPushButton("➕ Pair Device")
-        pair_top_btn.setObjectName("action_primary_sm")
-        pair_top_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        pair_top_btn.clicked.connect(self._show_pairing_dialog)
-        sec_header.addWidget(pair_top_btn)
+        pair_btn = QPushButton(" Pair Device")
+        pair_btn.setIcon(get_icon("plus", "#FFFFFF", "#FFFFFF", 12))
+        pair_btn.setObjectName("action_primary_sm")
+        pair_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        pair_btn.clicked.connect(self._show_pairing_dialog)
+        sec_header.addWidget(pair_btn)
 
         left_col.addLayout(sec_header)
 
         # Scroll Area for Device Cards
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.devices_container = QWidget()
         self.devices_layout = QVBoxLayout(self.devices_container)
         self.devices_layout.setContentsMargins(0, 0, 4, 0)
         self.devices_layout.setSpacing(12)
         self.devices_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        from PyQt6.QtWidgets import QLayout
         self.devices_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
+
 
         self.scroll_area.setWidget(self.devices_container)
         left_col.addWidget(self.scroll_area, 1)
 
-        workspace_layout.addLayout(left_col, 62)
+        grid_layout.addLayout(left_col, 63)
 
-        # ── Right Column: Dropzone & Activity (~38% width) ────────────────────
+        # ── Right / Info Column (~37% width) ──────────────────────────────────
         right_col = QVBoxLayout()
         right_col.setSpacing(16)
 
-        # 1. Fast Send Dropzone
-        self.dropzone = QFrame()
-        self.dropzone.setObjectName("dropzone")
-        drop_layout = QVBoxLayout(self.dropzone)
-        drop_layout.setContentsMargins(20, 24, 20, 24)
-        drop_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        drop_layout.setSpacing(10)
+        # 1. Local Machine Status Card (Matching "Today note" in Ref 2)
+        local_card = QFrame()
+        local_card.setObjectName("glow_card")
+        lc_layout = QVBoxLayout(local_card)
+        lc_layout.setContentsMargins(20, 18, 20, 18)
+        lc_layout.setSpacing(10)
 
-        drop_icon = QLabel("📁")
-        drop_icon.setStyleSheet("font-size: 38px; color: #38BDF8;")
-        drop_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lc_header = QHBoxLayout()
+        lc_title = QLabel("Local Machine")
+        lc_title.setObjectName("card_header_title")
+        lc_header.addWidget(lc_title)
+        lc_header.addStretch()
 
-        drop_title = QLabel("Fast Send Dropzone")
-        drop_title.setObjectName("heading")
-        drop_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        qr_icon_btn = QPushButton()
+        qr_icon_btn.setObjectName("action_icon_only")
+        qr_icon_btn.setIcon(get_icon("qr", "#38BDF8", "#FFFFFF", 16))
+        qr_icon_btn.setToolTip("Show My QR Code for incoming connection")
+        qr_icon_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        qr_icon_btn.clicked.connect(self.go_receive.emit)
+        lc_header.addWidget(qr_icon_btn)
+        lc_layout.addLayout(lc_header)
 
-        drop_sub = QLabel("Drag & drop files here to send immediately")
-        drop_sub.setObjectName("info")
-        drop_sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        local_id = self.pairing_manager.get_local_identity()
+        local_name_lbl = QLabel(f"Computer: {local_id.name}")
+        local_name_lbl.setStyleSheet("font-weight: 700; color: #FFFFFF; font-size: 13px;")
+        lc_layout.addWidget(local_name_lbl)
 
-        select_files_btn = QPushButton("➕ Choose Files...")
+        # Show real IP addresses
+        local_ips = list(self.connection_manager.discovery_service._get_local_ips())
+        ip_display = local_ips[0] if local_ips else "127.0.0.1"
+        self._lbl_ip_info = QLabel(f"IP: {ip_display} • Port 47474")
+        self._lbl_ip_info.setObjectName("muted_text")
+        lc_layout.addWidget(self._lbl_ip_info)
+
+        show_qr_btn = QPushButton(" Show My QR Code")
+        show_qr_btn.setIcon(get_icon("qr", "#E2E8F0", "#FFFFFF", 14))
+        show_qr_btn.setObjectName("secondary")
+        show_qr_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        show_qr_btn.clicked.connect(self.go_receive.emit)
+        lc_layout.addWidget(show_qr_btn)
+
+        right_col.addWidget(local_card)
+
+        # 2. Fast Send Dropzone Card (Matching "My files" in Ref 2)
+        dropzone = QFrame()
+        dropzone.setObjectName("dropzone_card")
+        dz_layout = QVBoxLayout(dropzone)
+        dz_layout.setContentsMargins(20, 20, 20, 20)
+        dz_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        dz_layout.setSpacing(10)
+
+        # File type vector icons row
+        icons_row = QHBoxLayout()
+        icons_row.setSpacing(12)
+        icons_row.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        for ic_name in ["file_image", "file_video", "file", "folder"]:
+            lbl = QLabel()
+            lbl.setPixmap(get_pixmap(ic_name, "#38BDF8", 22))
+            icons_row.addWidget(lbl)
+        dz_layout.addLayout(icons_row)
+
+        dz_title = QLabel("Quick Send Dropzone")
+        dz_title.setObjectName("card_header_title")
+        dz_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        dz_sub = QLabel("Drag & drop files here to send instantly")
+        dz_sub.setObjectName("muted_text")
+        dz_sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        select_files_btn = QPushButton(" Choose Files...")
+        select_files_btn.setIcon(get_icon("plus", "#FFFFFF", "#FFFFFF", 12))
         select_files_btn.setObjectName("primary")
         select_files_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         select_files_btn.clicked.connect(self._on_choose_files_clicked)
 
-        drop_layout.addWidget(drop_icon)
-        drop_layout.addWidget(drop_title)
-        drop_layout.addWidget(drop_sub)
-        drop_layout.addSpacing(6)
-        drop_layout.addWidget(select_files_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+        dz_layout.addWidget(dz_title)
+        dz_layout.addWidget(dz_sub)
+        dz_layout.addSpacing(4)
+        dz_layout.addWidget(select_files_btn, alignment=Qt.AlignmentFlag.AlignCenter)
 
-        right_col.addWidget(self.dropzone)
+        right_col.addWidget(dropzone)
 
-        # 2. Activity & Security Summary Card
-        activity_card = QFrame()
-        activity_card.setObjectName("card")
-        act_layout = QVBoxLayout(activity_card)
+        # 3. Real Activity & Stats Card (Matching "Activity" in Ref 2)
+        self.activity_card = QFrame()
+        self.activity_card.setObjectName("card")
+        act_layout = QVBoxLayout(self.activity_card)
         act_layout.setContentsMargins(20, 18, 20, 18)
-        act_layout.setSpacing(12)
+        act_layout.setSpacing(10)
 
-        act_title_row = QHBoxLayout()
-        act_title = QLabel("Security & Transfer Engine")
-        act_title.setObjectName("heading")
-        act_title_row.addWidget(act_title)
-        act_title_row.addStretch()
-        act_layout.addLayout(act_title_row)
+        act_header = QHBoxLayout()
+        act_title = QLabel("Transfer Activity")
+        act_title.setObjectName("card_header_title")
+        act_header.addWidget(act_title)
+        act_header.addStretch()
 
-        engine_row = QLabel("⚡ Beam Multipath Engine (Wi-Fi + USB)")
-        engine_row.setObjectName("info")
-        enc_row = QLabel("🔒 TLS Mutual Auth & SHA-256 Verifier")
-        enc_row.setObjectName("info")
-        cloud_row = QLabel("🛡️ Zero Cloud • 100% Local Storage")
-        cloud_row.setObjectName("info")
-        act_layout.addWidget(engine_row)
-        act_layout.addWidget(enc_row)
-        act_layout.addWidget(cloud_row)
+        self._lbl_total_count = QLabel("0 transfers")
+        self._lbl_total_count.setObjectName("badge_blue")
+        act_header.addWidget(self._lbl_total_count)
+        act_layout.addLayout(act_header)
 
-        act_layout.addSpacing(4)
+        self._lbl_stats_volume = QLabel("Total Volume: 0 MB")
+        self._lbl_stats_volume.setObjectName("muted_text")
+        act_layout.addWidget(self._lbl_stats_volume)
 
-        hist_btn = QPushButton("View Transfer Activity →")
-        hist_btn.setObjectName("secondary")
-        hist_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        hist_btn.clicked.connect(self.go_history.emit)
-        act_layout.addWidget(hist_btn)
+        self._lbl_stats_security = QLabel("100% Peer-to-Peer • Zero Cloud")
+        self._lbl_stats_security.setStyleSheet("color: #10B981; font-size: 11px; font-weight: 600;")
+        act_layout.addWidget(self._lbl_stats_security)
 
-        right_col.addWidget(activity_card)
+        view_hist_btn = QPushButton(" View All History →")
+        view_hist_btn.setObjectName("secondary")
+        view_hist_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        view_hist_btn.clicked.connect(self.go_history.emit)
+        act_layout.addWidget(view_hist_btn)
 
-        # 3. Ad-hoc Actions Fallback Card
-        adhoc_card = QFrame()
-        adhoc_card.setObjectName("card")
-        adhoc_layout = QHBoxLayout(adhoc_card)
-        adhoc_layout.setContentsMargins(16, 12, 16, 12)
-        adhoc_layout.setSpacing(10)
+        right_col.addWidget(self.activity_card)
 
-        recv_adhoc_btn = QPushButton("📥 Receive (Scan QR)")
-        recv_adhoc_btn.setObjectName("action_sm")
-        recv_adhoc_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        recv_adhoc_btn.clicked.connect(self.go_receive.emit)
-        adhoc_layout.addWidget(recv_adhoc_btn)
+        grid_layout.addLayout(right_col, 37)
+        root.addLayout(grid_layout, 1)
 
-        send_adhoc_btn = QPushButton("📤 Send (URI Link)")
-        send_adhoc_btn.setObjectName("action_sm")
-        send_adhoc_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        send_adhoc_btn.clicked.connect(self.go_send.emit)
-        adhoc_layout.addWidget(send_adhoc_btn)
-
-        right_col.addWidget(adhoc_card)
-        right_col.addStretch(1)
-
-        workspace_layout.addLayout(right_col, 38)
-        root.addLayout(workspace_layout, 1)
-
-        # Hidden local badge preserved for tests
-        local_id = self.pairing_manager.get_local_identity()
-        self.local_badge = QLabel(f"💻 {local_id.name} (Discoverable)")
-        self.local_badge.setObjectName("badge_green")
+        # Hidden local badge preserved for existing unit tests
+        self.local_badge = QLabel(f"{local_id.name} (Discoverable)")
         self.local_badge.setVisible(False)
         root.addWidget(self.local_badge)
 
+        self.refresh_devices()
+
+    def _set_filter(self, mode: str):
+        self._filter_mode = mode
+        self._pill_all.setProperty("active", "true" if mode == "all" else "false")
+        self._pill_online.setProperty("active", "true" if mode == "online" else "false")
+        self._pill_all.style().unpolish(self._pill_all)
+        self._pill_all.style().polish(self._pill_all)
+        self._pill_online.style().unpolish(self._pill_online)
+        self._pill_online.style().polish(self._pill_online)
         self.refresh_devices()
 
     def dragEnterEvent(self, event: QDragEnterEvent):
@@ -302,9 +362,21 @@ class HomeScreen(QWidget):
                 w.setParent(None)
                 w.deleteLater()
 
-        devices = self.pairing_manager.get_paired_devices()
+        all_devices = self.pairing_manager.get_paired_devices()
+        if self._filter_mode == "online":
+            devices = [d for d in all_devices if d.presence_state == PresenceState.DISCOVERED or d.connection_state == ConnectionState.CONNECTED]
+        else:
+            devices = all_devices
+
         count_txt = f"{len(devices)} Device" if len(devices) == 1 else f"{len(devices)} Devices"
         self._device_count_badge.setText(count_txt)
+
+        # Refresh real activity statistics
+        records = self.history_manager.get_records()
+        completed = [r for r in records if r.status == "completed"]
+        total_vol = sum(r.total_bytes for r in completed)
+        self._lbl_total_count.setText(f"{len(completed)} transfers")
+        self._lbl_stats_volume.setText(f"Total Volume: {format_bytes(total_vol)}")
 
         if not devices:
             empty = QFrame()
@@ -314,24 +386,25 @@ class HomeScreen(QWidget):
             e_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
             e_layout.setSpacing(12)
 
-            e_icon = QLabel("📱")
-            e_icon.setStyleSheet("font-size: 40px;")
-            e_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            empty_icon = QLabel()
+            empty_icon.setPixmap(get_pixmap("device_phone", "#64748B", 40))
+            empty_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-            e_title = QLabel("No Paired Devices Yet")
-            e_title.setObjectName("heading")
+            e_title = QLabel("No Paired Devices")
+            e_title.setObjectName("section_heading")
             e_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-            e_sub = QLabel("Pair your Android phone or tablet to enable 1-tap instant transfer.")
-            e_sub.setObjectName("subtitle")
+            e_sub = QLabel("Pair your phone or tablet to transfer files with 1 tap.")
+            e_sub.setObjectName("muted_text")
             e_sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-            pair_btn = QPushButton("➕ Pair New Device")
-            pair_btn.setObjectName("action_primary_sm")
+            pair_btn = QPushButton(" Pair New Device")
+            pair_btn.setIcon(get_icon("plus", "#FFFFFF", "#FFFFFF", 12))
+            pair_btn.setObjectName("primary")
             pair_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             pair_btn.clicked.connect(self._show_pairing_dialog)
 
-            e_layout.addWidget(e_icon)
+            e_layout.addWidget(empty_icon)
             e_layout.addWidget(e_title)
             e_layout.addWidget(e_sub)
             e_layout.addSpacing(6)
@@ -343,32 +416,97 @@ class HomeScreen(QWidget):
             card = self._create_device_card(dev)
             self.devices_layout.addWidget(card)
 
-    def _create_device_card(self, dev: PairedDevice) -> QFrame:
+        # Recent transfers section matching Reference 2 layout
+        if completed:
+            rec_header_layout = QHBoxLayout()
+            rec_header_layout.setContentsMargins(4, 10, 4, 2)
+            rec_title = QLabel("Recent Completed Transfers")
+            rec_title.setStyleSheet("font-size: 13px; font-weight: 700; color: #94A3B8;")
+            rec_header_layout.addWidget(rec_title)
+            rec_header_layout.addStretch()
+            view_all_link = QPushButton("View All →")
+            view_all_link.setObjectName("secondary")
+            view_all_link.setCursor(Qt.CursorShape.PointingHandCursor)
+            view_all_link.clicked.connect(self.go_history.emit)
+            rec_header_layout.addWidget(view_all_link)
+
+            rec_container = QWidget()
+            rec_container.setLayout(rec_header_layout)
+            self.devices_layout.addWidget(rec_container)
+
+            for r in completed[:2]:
+                self.devices_layout.addWidget(self._create_recent_transfer_card(r))
+
+    def _create_recent_transfer_card(self, r: TransferRecord) -> QFrame:
         card = QFrame()
         card.setObjectName("card")
+        layout = QHBoxLayout(card)
+        layout.setContentsMargins(16, 12, 16, 12)
+        layout.setSpacing(12)
+
+        ic_lbl = QLabel()
+        ic_name = "send" if r.direction == "sent" else "receive"
+        ic_color = "#38BDF8" if r.direction == "sent" else "#10B981"
+        ic_lbl.setPixmap(get_pixmap(ic_name, ic_color, 20))
+        layout.addWidget(ic_lbl)
+
+        info_col = QVBoxLayout()
+        info_col.setSpacing(2)
+        fname = r.files[0] if r.files else "Transfer"
+        if len(r.files) > 1:
+            fname += f" (+{len(r.files) - 1} more)"
+        file_lbl = QLabel(fname)
+        file_lbl.setStyleSheet("font-size: 13px; font-weight: 600; color: #FFFFFF;")
+
+        sub_txt = f"{format_bytes(r.total_bytes)}"
+        if r.duration_sec > 0:
+            avg_spd = (r.total_bytes / (1024 * 1024)) / r.duration_sec
+            sub_txt += f" • {r.duration_sec:.1f}s ({avg_spd:.1f} MB/s)"
+        sub_lbl = QLabel(sub_txt)
+        sub_lbl.setObjectName("muted_text")
+
+        info_col.addWidget(file_lbl)
+        info_col.addWidget(sub_lbl)
+        layout.addLayout(info_col, 1)
+
+        trans_lbl = QLabel(r.transport_type.upper())
+        trans_lbl.setObjectName("transport_tag")
+        layout.addWidget(trans_lbl)
+
+        stat_badge = QLabel("Completed")
+        stat_badge.setObjectName("badge_green")
+        layout.addWidget(stat_badge)
+
+        return card
+
+    def _create_device_card(self, dev: PairedDevice) -> QFrame:
+        card = QFrame()
+        card.setObjectName("active_device_card")
         card_layout = QVBoxLayout(card)
         card_layout.setContentsMargins(18, 16, 18, 16)
         card_layout.setSpacing(12)
 
-        # Top row: Avatar icon ring + Device Info + Presence Badges + Menu
+        # Row 1: Avatar + Device Name/Endpoint + Status Tags + Overflow Menu
         top_row = QHBoxLayout()
-        top_row.setSpacing(14)
+        top_row.setSpacing(12)
 
-        icon_frame = QFrame()
-        icon_frame.setObjectName("device_icon_ring")
-        icon_layout = QVBoxLayout(icon_frame)
-        icon_layout.setContentsMargins(0, 0, 0, 0)
-        icon_lbl = QLabel("📱")
-        icon_lbl.setStyleSheet("font-size: 20px;")
-        icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        icon_layout.addWidget(icon_lbl)
-        top_row.addWidget(icon_frame)
+        avatar = QFrame()
+        avatar.setStyleSheet("background-color: #172238; border: 1px solid #233350; border-radius: 10px;")
+        avatar.setFixedSize(40, 40)
+        av_layout = QVBoxLayout(avatar)
+        av_layout.setContentsMargins(0, 0, 0, 0)
+        av_icon = QLabel()
+        av_icon.setPixmap(get_pixmap("device_phone", "#38BDF8", 22))
+        av_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        av_layout.addWidget(av_icon)
+        top_row.addWidget(avatar)
 
         info_col = QVBoxLayout()
         info_col.setSpacing(2)
         name_lbl = QLabel(dev.identity.name)
-        name_lbl.setStyleSheet("font-size: 15px; font-weight: 700; color: #FFFFFF;")
+        name_lbl.setObjectName("device_title")
 
+        # Subtext with real presence information
         sub_text = "Never connected"
         if dev.identity.last_seen > 0:
             diff = int(time.time() - dev.identity.last_seen)
@@ -378,9 +516,15 @@ class HomeScreen(QWidget):
                 sub_text = f"Active {diff // 60}m ago"
             else:
                 sub_text = f"Active {diff // 3600}h ago"
-        sub_lbl = QLabel(sub_text)
-        sub_lbl.setObjectName("info")
 
+        addr_info = ""
+        if dev.endpoint and dev.endpoint.addrs:
+            valid_ips = [ip for ip in dev.endpoint.addrs if ip != "127.0.0.1"]
+            if valid_ips:
+                addr_info = f" • {valid_ips[0]}"
+
+        sub_lbl = QLabel(f"{sub_text}{addr_info}")
+        sub_lbl.setObjectName("muted_text")
         info_col.addWidget(name_lbl)
         info_col.addWidget(sub_lbl)
         top_row.addLayout(info_col)
@@ -389,13 +533,13 @@ class HomeScreen(QWidget):
 
         # Presence badge
         if dev.presence_state == PresenceState.DISCOVERED:
-            pres_badge = QLabel("🟢 Online")
+            pres_badge = QLabel("Online")
             pres_badge.setObjectName("badge_green")
         elif dev.presence_state == PresenceState.SEARCHING:
-            pres_badge = QLabel("🟡 Searching...")
+            pres_badge = QLabel("Searching")
             pres_badge.setObjectName("badge_orange")
         else:
-            pres_badge = QLabel("⚪ Offline")
+            pres_badge = QLabel("Offline")
             pres_badge.setObjectName("badge_gray")
         top_row.addWidget(pres_badge)
 
@@ -404,48 +548,45 @@ class HomeScreen(QWidget):
             conn_badge = QLabel("Connected")
             conn_badge.setObjectName("badge_green")
         elif dev.connection_state == ConnectionState.CONNECTING:
-            conn_badge = QLabel("Connecting...")
+            conn_badge = QLabel("Connecting")
             conn_badge.setObjectName("badge_blue")
-        elif dev.connection_state == ConnectionState.AUTHENTICATION_REQUIRED:
-            conn_badge = QLabel("Auth Required")
-            conn_badge.setObjectName("badge_orange")
         else:
             conn_badge = QLabel("Disconnected")
             conn_badge.setObjectName("badge_gray")
         top_row.addWidget(conn_badge)
 
-        # Overflow menu button
-        more_btn = QPushButton("⋮")
-        more_btn.setObjectName("action_sm")
-        more_btn.setFixedWidth(32)
+        # Options dropdown
+        more_btn = QPushButton()
+        more_btn.setObjectName("action_icon_only")
+        more_btn.setIcon(get_icon("more", "#94A3B8", "#FFFFFF", 16))
         more_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         more_btn.clicked.connect(lambda: self._show_device_menu(dev, more_btn))
         top_row.addWidget(more_btn)
 
         card_layout.addLayout(top_row)
 
-        # Middle row: Transports and capabilities
+        # Row 2: Transport Tags & Capabilities
         mid_row = QHBoxLayout()
-        mid_row.setSpacing(8)
+        mid_row.setSpacing(6)
 
         if dev.endpoint and dev.endpoint.transports:
             for tr in dev.endpoint.transports:
-                pill = QLabel(f"📶 {tr.upper()}" if tr == "wifi" else f"🔌 {tr.upper()}")
-                pill.setObjectName("transport_pill")
+                pill = QLabel(tr.upper())
+                pill.setObjectName("transport_tag")
                 mid_row.addWidget(pill)
 
-        ft_pill = QLabel("📁 File Transfer")
-        ft_pill.setObjectName("transport_pill")
-        mid_row.addWidget(ft_pill)
+        p2p_tag = QLabel("PEER-TO-PEER")
+        p2p_tag.setObjectName("transport_tag")
+        mid_row.addWidget(p2p_tag)
 
-        mirror_pill = QLabel("🖥️ Screen Mirror")
-        mirror_pill.setObjectName("transport_pill")
-        mid_row.addWidget(mirror_pill)
+        enc_tag = QLabel("ENCRYPTED")
+        enc_tag.setObjectName("transport_tag")
+        mid_row.addWidget(enc_tag)
 
         mid_row.addStretch(1)
         card_layout.addLayout(mid_row)
 
-        # Bottom row: Action Buttons
+        # Row 3: Action Buttons
         btn_row = QHBoxLayout()
         btn_row.setSpacing(10)
 
@@ -460,13 +601,15 @@ class HomeScreen(QWidget):
             conn_btn.clicked.connect(lambda: self.connection_manager.connect_device(dev_id))
         btn_row.addWidget(conn_btn)
 
-        send_btn = QPushButton("📤 Send Files")
+        send_btn = QPushButton(" Send Files")
+        send_btn.setIcon(get_icon("send", "#FFFFFF", "#FFFFFF", 12))
         send_btn.setObjectName("action_primary_sm")
         send_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         send_btn.clicked.connect(lambda: self.go_send_to_device.emit(dev_id))
         btn_row.addWidget(send_btn)
 
-        mirror_btn = QPushButton("🖥️ Mirror Screen")
+        mirror_btn = QPushButton(" Screen Mirror")
+        mirror_btn.setIcon(get_icon("mirror", "#94A3B8", "#FFFFFF", 13))
         mirror_btn.setObjectName("action_sm")
         mirror_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         mirror_btn.clicked.connect(lambda: self.go_mirror.emit(dev_id))
@@ -487,13 +630,13 @@ class HomeScreen(QWidget):
 
         dev_id = dev.identity.device_id
 
-        rename_act = menu.addAction("✏️ Rename Device")
+        rename_act = menu.addAction("Rename Device")
         rename_act.triggered.connect(lambda: self._rename_device(dev_id, dev.identity.name))
 
-        forget_act = menu.addAction("🗑️ Forget Device")
+        forget_act = menu.addAction("Forget Device")
         forget_act.triggered.connect(lambda: self._forget_device(dev_id, dev.identity.name))
 
-        revoke_act = menu.addAction("🚫 Revoke Trust")
+        revoke_act = menu.addAction("Revoke Trust")
         revoke_act.triggered.connect(lambda: self._revoke_device(dev_id, dev.identity.name))
 
         menu.exec(anchor.mapToGlobal(anchor.rect().bottomLeft()))

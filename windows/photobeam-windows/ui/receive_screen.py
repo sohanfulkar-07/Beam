@@ -776,25 +776,28 @@ class ReceiveScreen(QWidget):
 
     def _build_ui(self):
         root = QVBoxLayout(self)
-        root.setContentsMargins(40, 20, 40, 40)
-        root.setSpacing(14)
+        root.setContentsMargins(36, 24, 36, 32)
+        root.setSpacing(18)
 
         # ── Top Bar ───────────────────────────────────────────────────────────
         top = QHBoxLayout()
-        back_btn = QPushButton("← Back")
-        back_btn.setObjectName("back")
+        back_btn = QPushButton(" Back to Dashboard")
+        back_btn.setObjectName("secondary")
+        back_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         back_btn.clicked.connect(self._on_back)
         top.addWidget(back_btn)
 
         top.addStretch()
 
-        dest_btn = QPushButton("📁 Destination")
+        dest_btn = QPushButton(" Destination")
         dest_btn.setObjectName("secondary")
+        dest_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         dest_btn.clicked.connect(self._pick_dest)
         top.addWidget(dest_btn)
 
-        hist_btn = QPushButton("📜 History")
+        hist_btn = QPushButton(" Activity")
         hist_btn.setObjectName("secondary")
+        hist_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         hist_btn.clicked.connect(self.go_history.emit)
         top.addWidget(hist_btn)
 
@@ -806,20 +809,19 @@ class ReceiveScreen(QWidget):
         self._card_layout = QVBoxLayout(self._card)
         self._card_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._card_layout.setSpacing(16)
-        self._card_layout.setContentsMargins(36, 32, 36, 32)
+        self._card_layout.setContentsMargins(32, 28, 32, 28)
 
         # Title
-        heading = QLabel("📥 Receive Files")
-        heading.setObjectName("heading")
+        heading = QLabel("Receive Files")
+        heading.setObjectName("dash_heading")
         heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._card_layout.addWidget(heading)
 
         # Connection status badge
         self._conn_badge = QLabel("Waiting for incoming transfer…")
-        self._conn_badge.setObjectName("info")
+        self._conn_badge.setObjectName("badge_gray")
         self._conn_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._conn_badge.setStyleSheet("font-size: 14px; font-weight: 500;")
-        self._card_layout.addWidget(self._conn_badge)
+        self._card_layout.addWidget(self._conn_badge, alignment=Qt.AlignmentFlag.AlignCenter)
 
         # ── QR Waiting View ───────────────────────────────────────────────────
         self._qr_container = QWidget()
@@ -835,7 +837,7 @@ class ReceiveScreen(QWidget):
         qr_layout.addWidget(self._qr_label, alignment=Qt.AlignmentFlag.AlignCenter)
 
         self._inst_label = QLabel("Point your mobile camera at this QR code to connect")
-        self._inst_label.setObjectName("subtitle")
+        self._inst_label.setObjectName("muted_text")
         self._inst_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         qr_layout.addWidget(self._inst_label)
 
@@ -847,15 +849,21 @@ class ReceiveScreen(QWidget):
         prompt_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         prompt_layout.setSpacing(14)
 
-        prompt_icon = QLabel("📥")
-        prompt_icon.setStyleSheet("font-size: 40px;")
+        try:
+            from .icons import get_pixmap
+        except (ImportError, ValueError):
+            from icons import get_pixmap
+
+        prompt_icon = QLabel()
+        prompt_icon.setPixmap(get_pixmap("receive", "#38BDF8", 36))
         prompt_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
         prompt_layout.addWidget(prompt_icon)
 
         prompt_title = QLabel("Incoming Transfer")
-        prompt_title.setObjectName("heading")
+        prompt_title.setObjectName("section_heading")
         prompt_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         prompt_layout.addWidget(prompt_title)
+
 
         self._prompt_details = QLabel("3 files • 2.84 GB")
         self._prompt_details.setObjectName("subtitle")

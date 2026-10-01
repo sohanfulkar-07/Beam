@@ -543,20 +543,22 @@ class SendScreen(QWidget):
 
     def _build_ui(self):
         root = QVBoxLayout(self)
-        root.setContentsMargins(40, 20, 40, 40)
-        root.setSpacing(14)
+        root.setContentsMargins(36, 24, 36, 32)
+        root.setSpacing(18)
 
         # ── Top Bar ───────────────────────────────────────────────────────────
         top = QHBoxLayout()
-        back_btn = QPushButton("← Back")
-        back_btn.setObjectName("back")
+        back_btn = QPushButton(" Back to Dashboard")
+        back_btn.setObjectName("secondary")
+        back_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         back_btn.clicked.connect(self._on_back)
         top.addWidget(back_btn)
 
         top.addStretch()
 
-        history_btn = QPushButton("📜 History")
+        history_btn = QPushButton(" Activity")
         history_btn.setObjectName("secondary")
+        history_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         history_btn.clicked.connect(self.go_history.emit)
         top.addWidget(history_btn)
         root.addLayout(top)
@@ -566,30 +568,26 @@ class SendScreen(QWidget):
         self._card.setObjectName("card")
         self._card_layout = QVBoxLayout(self._card)
         self._card_layout.setSpacing(16)
-        self._card_layout.setContentsMargins(36, 32, 36, 32)
+        self._card_layout.setContentsMargins(32, 28, 32, 28)
 
         # Title
-        heading = QLabel("📤 Send Files")
-        heading.setObjectName("heading")
+        heading = QLabel("Send Files")
+        heading.setObjectName("dash_heading")
         heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._card_layout.addWidget(heading)
 
         # Connection Status Badge
-        self._conn_badge = QLabel("○ Looking for devices…")
-        self._conn_badge.setObjectName("info")
+        self._conn_badge = QLabel("Looking for devices…")
+        self._conn_badge.setObjectName("badge_gray")
         self._conn_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._conn_badge.setStyleSheet("font-size: 14px; font-weight: 600; padding: 4px 12px; border-radius: 8px;")
-        self._card_layout.addWidget(self._conn_badge)
+        self._card_layout.addWidget(self._conn_badge, alignment=Qt.AlignmentFlag.AlignCenter)
 
         # QR Input Area
         qr_row = QHBoxLayout()
         qr_lbl = QLabel("Receiver URI:")
-        qr_lbl.setObjectName("subtitle")
+        qr_lbl.setObjectName("muted_text")
         self._qr_input = QLineEdit()
         self._qr_input.setPlaceholderText("Paste receiver's photobeam://connect/... link")
-        self._qr_input.setStyleSheet(
-            "background:#1e293b; color:#e2e8f0; border:1px solid #334155; border-radius:8px; padding:8px; font-size:13px;"
-        )
         self._qr_input.textChanged.connect(self._on_uri_changed)
         qr_row.addWidget(qr_lbl)
         qr_row.addWidget(self._qr_input, stretch=1)
@@ -603,15 +601,16 @@ class SendScreen(QWidget):
 
         # Drop Zone
         self._drop_zone = QFrame()
-        self._drop_zone.setObjectName("transfer_item")
-        self._drop_zone.setMinimumHeight(100)
+        self._drop_zone.setObjectName("dropzone_card")
+        self._drop_zone.setMinimumHeight(120)
         drop_layout = QVBoxLayout(self._drop_zone)
         drop_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._drop_label = QLabel("Drag & drop files here, or")
-        self._drop_label.setObjectName("subtitle")
+        self._drop_label.setObjectName("muted_text")
         self._drop_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        browse_btn = QPushButton("📁 Browse Files")
-        browse_btn.setObjectName("secondary")
+        browse_btn = QPushButton(" Choose Files...")
+        browse_btn.setObjectName("primary")
+        browse_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         browse_btn.clicked.connect(self._browse_files)
         drop_layout.addWidget(self._drop_label)
         drop_layout.addWidget(browse_btn, alignment=Qt.AlignmentFlag.AlignCenter)
@@ -620,8 +619,9 @@ class SendScreen(QWidget):
         # Selected files header (count & total size)
         summary_row = QHBoxLayout()
         self._files_summary_label = QLabel("No files selected")
-        self._files_summary_label.setObjectName("subtitle")
+        self._files_summary_label.setObjectName("muted_text")
         summary_row.addWidget(self._files_summary_label)
+
 
         summary_row.addStretch()
 
