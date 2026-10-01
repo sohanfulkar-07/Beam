@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent
 from PyQt6.QtWidgets import (
     QFileDialog,
@@ -96,6 +96,17 @@ class HomeScreen(QWidget):
 
         self.setAcceptDrops(True)
         self.connection_manager.add_device_updated_callback(self._on_device_updated_from_bg)
+
+        # Connect to ConnectionManager Qt signals for thread-safe UI updates
+        if hasattr(self.connection_manager, "sig_device_updated") and self.connection_manager.sig_device_updated:
+            self.connection_manager.sig_device_updated.connect(self._on_sig_device_updated)
+        if hasattr(self.connection_manager, "sig_device_connected") and self.connection_manager.sig_device_connected:
+            self.connection_manager.sig_device_connected.connect(lambda dev_id, tr: self.refresh_devices())
+        if hasattr(self.connection_manager, "sig_device_disconnected") and self.connection_manager.sig_device_disconnected:
+            self.connection_manager.sig_device_disconnected.connect(lambda dev_id: self.refresh_devices())
+        if hasattr(self.connection_manager, "sig_connection_state_changed") and self.connection_manager.sig_connection_state_changed:
+            self.connection_manager.sig_connection_state_changed.connect(lambda dev_id, st: self.refresh_devices())
+
         self._filter_mode = "all"  # "all" or "online"
 
         self._build_ui()
@@ -360,6 +371,7 @@ class HomeScreen(QWidget):
         dlg.paired_success.connect(lambda dev: self.refresh_devices())
         dlg.exec()
 
+    @pyqtSlot()
     def refresh_devices(self):
         # Clear existing cards immediately
         while self.devices_layout.count():
@@ -389,7 +401,9 @@ class HomeScreen(QWidget):
         if active_id:
             active_dev = self.pairing_manager.get_paired_device(active_id)
             name = active_dev.identity.name if active_dev else active_id
-            self._lbl_session_status.setText(f"🟢 Connected to {name}")
+            transports = self.connection_manager.get_active_transports(active_id)
+            trans_str = f" ({transports[0].upper()})" if transports else ""
+            self._lbl_session_status.setText(f"🟢 Connected to {name}{trans_str}")
             self._lbl_session_status.setStyleSheet("color: #4ADE80; font-weight: 600; font-size: 12px;")
         else:
             self._lbl_session_status.setText("⚪ Disconnected (Scan QR to Connect)")
@@ -427,11 +441,14 @@ class HomeScreen(QWidget):
             e_layout.addSpacing(6)
             e_layout.addWidget(pair_btn, alignment=Qt.AlignmentFlag.AlignCenter)
             self.devices_layout.addWidget(empty)
+            empty.show()
+            self.devices_container.adjustSize()
             return
 
         for dev in devices:
             card = self._create_device_card(dev)
             self.devices_layout.addWidget(card)
+            card.show()
 
         # Recent transfers section matching Reference 2 layout
         if completed:
@@ -450,9 +467,14 @@ class HomeScreen(QWidget):
             rec_container = QWidget()
             rec_container.setLayout(rec_header_layout)
             self.devices_layout.addWidget(rec_container)
+            rec_container.show()
 
             for r in completed[:2]:
-                self.devices_layout.addWidget(self._create_recent_transfer_card(r))
+                rec_card = self._create_recent_transfer_card(r)
+                self.devices_layout.addWidget(rec_card)
+                rec_card.show()
+
+        self.devices_container.adjustSize()
 
     def _create_recent_transfer_card(self, r: TransferRecord) -> QFrame:
         card = QFrame()
@@ -551,7 +573,7 @@ class HomeScreen(QWidget):
         top_row.addStretch(1)
 
         # Presence badge
-        if dev.presence_state == PresenceState.DISCOVERED:
+        if dev.presence_state == PresenceState.DISCOVERED or dev.connection_state == ConnectionState.CONNECTED:
             pres_badge = QLabel("Online")
             pres_badge.setObjectName("badge_green")
         elif dev.presence_state == PresenceState.SEARCHING:
@@ -564,13 +586,13 @@ class HomeScreen(QWidget):
 
         # Connection badge
         if dev.connection_state == ConnectionState.CONNECTED:
-            conn_badge = QLabel("🟢 Connected")
+            conn_badge = QLabel("● Online / Connected")
             conn_badge.setObjectName("badge_green")
         elif dev.connection_state == ConnectionState.CONNECTING:
             conn_badge = QLabel("🟡 Connecting")
             conn_badge.setObjectName("badge_blue")
         else:
-            conn_badge = QLabel("⚪ Disconnected")
+            conn_badge = QLabel("Offline / Disconnected")
             conn_badge.setObjectName("badge_gray")
         top_row.addWidget(conn_badge)
 
@@ -690,6 +712,14 @@ class HomeScreen(QWidget):
             self.pairing_manager.revoke_trust(device_id)
             self.refresh_devices()
 
+    @pyqtSlot(object)
+    def _on_sig_device_updated(self, dev: PairedDevice):
+        self.refresh_devices()
+
     def _on_device_updated_from_bg(self, dev: PairedDevice):
-        from PyQt6.QtCore import QTimer
-        QTimer.singleShot(0, self.refresh_devices)
+        from PyQt6.QtCore import QMetaObject, Qt
+        QMetaObject.invokeMethod(self, "refresh_devices", Qt.ConnectionType.QueuedConnection)
+
+    def closeEvent(self, event):
+        self.connection_manager.remove_device_updated_callback(self._on_device_updated_from_bg)
+        super().closeEvent(event)

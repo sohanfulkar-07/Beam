@@ -61,6 +61,20 @@ except (ImportError, ValueError):
 
 import importlib.util
 
+try:
+    from PyQt6.QtCore import QObject, pyqtSignal
+    _HAS_PYQT = True
+except ImportError:
+    _HAS_PYQT = False
+
+if _HAS_PYQT:
+    class ConnectionSignals(QObject):
+        sig_device_connected = pyqtSignal(str, str)             # (device_id, transport_type)
+        sig_device_disconnected = pyqtSignal(str)               # (device_id)
+        sig_connection_state_changed = pyqtSignal(str, object)  # (device_id, ConnectionState)
+        sig_device_updated = pyqtSignal(object)                 # (PairedDevice)
+        sig_pairing_completed = pyqtSignal(object)              # (PairedDevice)
+
 def _load_module(mod_name: str, file_path: Path):
     spec = importlib.util.spec_from_file_location(mod_name, str(file_path))
     mod = importlib.util.module_from_spec(spec)
@@ -277,6 +291,21 @@ class ConnectionManager:
         self._on_pairing_request_cb: Optional[Callable[[DeviceIdentity, Callable[[bool], None]], None]] = None
         self._on_mirror_stream_cb: Optional[Callable[[str, socket.socket], None]] = None  # (device_id, sock)
 
+        if _HAS_PYQT:
+            self.signals = ConnectionSignals()
+            self.sig_device_connected = self.signals.sig_device_connected
+            self.sig_device_disconnected = self.signals.sig_device_disconnected
+            self.sig_connection_state_changed = self.signals.sig_connection_state_changed
+            self.sig_device_updated = self.signals.sig_device_updated
+            self.sig_pairing_completed = self.signals.sig_pairing_completed
+        else:
+            self.signals = None
+            self.sig_device_connected = None
+            self.sig_device_disconnected = None
+            self.sig_connection_state_changed = None
+            self.sig_device_updated = None
+            self.sig_pairing_completed = None
+
         self._running = False
         self._server_sock: Optional[socket.socket] = None
         self._server_thread: Optional[threading.Thread] = None
@@ -322,6 +351,12 @@ class ConnectionManager:
         if self._running:
             return
         self._running = True
+
+        # Clean slate on startup: any stale connected states from past app runs are reset
+        for dev in self.pairing_manager.get_paired_devices():
+            if dev.connection_state != ConnectionState.DISCONNECTED:
+                self.pairing_manager.update_connection_state(dev.identity.device_id, ConnectionState.DISCONNECTED)
+
         self.discovery_service.start()
 
         # Start persistent Control Server on port 47470
@@ -608,6 +643,11 @@ class ConnectionManager:
 
                 self._connecting_devices.discard(remote_id)
                 logger.info("[DIAG] [PAIR_OK] Successfully paired with %s (%s via %s)", name, remote_id, transport_type)
+                if self.signals:
+                    try:
+                        self.signals.sig_pairing_completed.emit(paired_dev)
+                    except Exception as e:
+                        logger.debug("Error emitting sig_pairing_completed: %s", e)
                 self._notify_device_updated(paired_dev)
                 return
 
@@ -718,6 +758,19 @@ class ConnectionManager:
         self._on_pairing_request_cb = cb
 
     def _notify_device_updated(self, device: PairedDevice) -> None:
+        if self.signals:
+            try:
+                self.signals.sig_device_updated.emit(device)
+                self.signals.sig_connection_state_changed.emit(device.identity.device_id, device.connection_state)
+                if device.connection_state == ConnectionState.CONNECTED:
+                    trans = self.get_active_transports(device.identity.device_id)
+                    transport_type = trans[0] if trans else "wifi"
+                    self.signals.sig_device_connected.emit(device.identity.device_id, transport_type)
+                elif device.connection_state == ConnectionState.DISCONNECTED:
+                    self.signals.sig_device_disconnected.emit(device.identity.device_id)
+            except Exception as e:
+                logger.debug("Error emitting Qt signals in _notify_device_updated: %s", e)
+
         with self._callbacks_lock:
             cbs = list(self._on_device_updated_cbs)
         for cb in cbs:
@@ -875,6 +928,11 @@ class ConnectionManager:
 
                 updated = self.pairing_manager.get_paired_device(payload.rid)
                 if updated:
+                    if self.signals and paired_sock:
+                        try:
+                            self.signals.sig_pairing_completed.emit(updated)
+                        except Exception as e:
+                            logger.debug("Error emitting sig_pairing_completed: %s", e)
                     self._notify_device_updated(updated)
 
             except Exception as e:
@@ -1077,8 +1135,9 @@ class ConnectionManager:
     def get_active_connected_device_id(self) -> str:
         """Return the device_id of the currently active session, or first CONNECTED paired device."""
         with self._connect_lock:
+            now = time.time()
             for dev_id, session in self._active_sessions.items():
-                if session and session.is_running:
+                if session and session.is_running and (now - session.last_pong_time < 18.0):
                     return dev_id
         # Fallback: check paired devices state
         for dev in self.pairing_manager.get_paired_devices():

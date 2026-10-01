@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot, QTimer
 from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (
     QDialog,
@@ -44,6 +44,7 @@ try:
     from src.models import (
         PROTOCOL_VERSION,
         Capability,
+        ConnectionState,
         PairingPayload,
         decode_pairing_payload,
         encode_pairing_payload,
@@ -52,6 +53,7 @@ except ImportError:
     from models import (
         PROTOCOL_VERSION,
         Capability,
+        ConnectionState,
         PairingPayload,
         decode_pairing_payload,
         encode_pairing_payload,
@@ -73,8 +75,17 @@ class PairingDialog(QDialog):
         self.resize(500, 620)
         self.setModal(True)
 
+        self._closing_soon = False
         self._build_ui()
         self._generate_qr()
+
+        # Connect directly to ConnectionManager Qt signals for immediate main-thread response
+        if hasattr(self.connection_manager, "sig_pairing_completed") and self.connection_manager.sig_pairing_completed:
+            self.connection_manager.sig_pairing_completed.connect(self._on_pairing_completed_signal)
+        if hasattr(self.connection_manager, "sig_device_connected") and self.connection_manager.sig_device_connected:
+            self.connection_manager.sig_device_connected.connect(self._on_device_connected_signal)
+        if hasattr(self.connection_manager, "sig_device_updated") and self.connection_manager.sig_device_updated:
+            self.connection_manager.sig_device_updated.connect(self._on_device_updated_signal)
 
     def _build_ui(self):
         main_layout = QVBoxLayout(self)
@@ -141,22 +152,62 @@ class PairingDialog(QDialog):
         close_btn.clicked.connect(self.close)
         layout.addWidget(close_btn, alignment=Qt.AlignmentFlag.AlignCenter)
 
-
         scroll.setWidget(container)
         main_layout.addWidget(scroll)
 
-        # Register external update listener
+        # Register external update listener as fallback
         self.connection_manager.add_device_updated_callback(self._on_external_device_updated)
 
     def closeEvent(self, event):
         self.connection_manager.remove_device_updated_callback(self._on_external_device_updated)
+        for sig, slot in [
+            (getattr(self.connection_manager, "sig_pairing_completed", None), self._on_pairing_completed_signal),
+            (getattr(self.connection_manager, "sig_device_connected", None), self._on_device_connected_signal),
+            (getattr(self.connection_manager, "sig_device_updated", None), self._on_device_updated_signal),
+        ]:
+            if sig:
+                try:
+                    sig.disconnect(slot)
+                except (TypeError, RuntimeError):
+                    pass
         super().closeEvent(event)
 
+    @pyqtSlot(object)
+    def _on_pairing_completed_signal(self, device):
+        self._handle_pairing_success(device)
+
+    @pyqtSlot(str, str)
+    def _on_device_connected_signal(self, device_id: str, transport_type: str):
+        dev = self.pairing_manager.get_paired_device(device_id)
+        self._handle_pairing_success(dev)
+
+    @pyqtSlot(object)
+    def _on_device_updated_signal(self, device):
+        if device and getattr(device, "connection_state", None) == ConnectionState.CONNECTED:
+            self._handle_pairing_success(device)
+
+    def _handle_pairing_success(self, device):
+        if self._closing_soon:
+            return
+        self._closing_soon = True
+        name = device.identity.name if (device and hasattr(device, "identity")) else "Device"
+        self.status_label.setStyleSheet("color: #10B981; font-weight: 700; font-size: 13px;")
+        self.status_label.setText(f"✓ Connected to {name}!")
+        if device:
+            self.paired_success.emit(device)
+        QTimer.singleShot(500, self.accept)
+
     def _on_external_device_updated(self, device):
-        if device.identity.trust_status.value == "trusted":
-            self.status_label.setText(f"Paired with {device.identity.name}!")
-            from PyQt6.QtCore import QTimer
-            QTimer.singleShot(1200, self.accept)
+        if device and getattr(device, "connection_state", None) == ConnectionState.CONNECTED:
+            from PyQt6.QtCore import QMetaObject, Qt
+            QMetaObject.invokeMethod(self, "_on_external_safe", Qt.ConnectionType.QueuedConnection)
+
+    @pyqtSlot()
+    def _on_external_safe(self):
+        devs = self.pairing_manager.get_paired_devices()
+        conn = [d for d in devs if d.connection_state == ConnectionState.CONNECTED]
+        if conn:
+            self._handle_pairing_success(conn[0])
 
     def _generate_qr(self):
         local_id = self.pairing_manager.get_local_identity()
@@ -225,9 +276,8 @@ class PairingDialog(QDialog):
             self.status_label.setText(f"Invalid code: {e}")
 
     def _on_paired_success(self, paired_device):
-        self.status_label.setText(f"Successfully paired with {paired_device.identity.name}!")
-        self.paired_success.emit(paired_device)
-        self.accept()
+        self._handle_pairing_success(paired_device)
 
     def _on_paired_error(self, err_msg):
+        self.status_label.setStyleSheet("color: #EF4444; font-weight: 500; font-size: 12px;")
         self.status_label.setText(f"Pairing error: {err_msg}")

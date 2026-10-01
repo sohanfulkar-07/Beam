@@ -102,7 +102,7 @@ QFrame#top_device_pill {
     background-color: #101726;
     border: 1px solid #1B263E;
     border-radius: 10px;
-    padding: 4px 12px;
+    padding: 0px;
 }
 
 /* ── Dashboard Content Header ────────────────────────────────── */

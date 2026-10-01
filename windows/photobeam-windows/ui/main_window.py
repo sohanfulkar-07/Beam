@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from PyQt6.QtCore import QSize, Qt, pyqtSignal
+from PyQt6.QtCore import QSize, Qt, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QColor, QFont, QIcon
 from PyQt6.QtWidgets import (
     QApplication,
@@ -85,6 +85,16 @@ class MainWindow(QMainWindow):
         self.connection_manager = ConnectionManager.get_instance()
         self.connection_manager.start()
         self.connection_manager.add_device_updated_callback(self._on_device_updated_bg)
+
+        # Connect to ConnectionManager Qt signals for thread-safe UI updates
+        if hasattr(self.connection_manager, "sig_device_connected") and self.connection_manager.sig_device_connected:
+            self.connection_manager.sig_device_connected.connect(self._on_sig_device_connected)
+        if hasattr(self.connection_manager, "sig_device_disconnected") and self.connection_manager.sig_device_disconnected:
+            self.connection_manager.sig_device_disconnected.connect(self._on_sig_device_disconnected)
+        if hasattr(self.connection_manager, "sig_device_updated") and self.connection_manager.sig_device_updated:
+            self.connection_manager.sig_device_updated.connect(self._on_sig_device_updated)
+        if hasattr(self.connection_manager, "sig_connection_state_changed") and self.connection_manager.sig_connection_state_changed:
+            self.connection_manager.sig_connection_state_changed.connect(self._on_sig_connection_state_changed)
 
         # Register mirror stream callback — fires when Android initiates mirroring
         self.connection_manager.set_mirror_stream_callback(self._on_mirror_stream_bg)
@@ -209,8 +219,9 @@ class MainWindow(QMainWindow):
         # Connected Device Pill
         self._top_device_pill = QFrame()
         self._top_device_pill.setObjectName("top_device_pill")
+        self._top_device_pill.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         tdp_layout = QHBoxLayout(self._top_device_pill)
-        tdp_layout.setContentsMargins(10, 5, 10, 5)
+        tdp_layout.setContentsMargins(12, 6, 12, 6)
         tdp_layout.setSpacing(8)
         self._top_status_dot = QLabel("●")
         self._top_status_dot.setStyleSheet("color: #94A3B8; font-size: 11px;")
@@ -412,30 +423,67 @@ class MainWindow(QMainWindow):
         if hasattr(self._send, "set_selected_files"):
             self._send.set_selected_files(file_paths)
 
+    @pyqtSlot(str, str)
+    def _on_sig_device_connected(self, device_id: str, transport_type: str):
+        self._sync_all_views()
+
+    @pyqtSlot(str)
+    def _on_sig_device_disconnected(self, device_id: str):
+        self._sync_all_views()
+
+    @pyqtSlot(object)
+    def _on_sig_device_updated(self, dev):
+        self._sync_all_views()
+
+    @pyqtSlot(str, object)
+    def _on_sig_connection_state_changed(self, device_id: str, state):
+        self._sync_all_views()
+
+    @pyqtSlot()
+    def _sync_all_views(self):
+        self._update_top_status()
+        self._home.refresh_devices()
+        if hasattr(self, "_send") and hasattr(self._send, "refresh_connection_status"):
+            self._send.refresh_connection_status()
+
     def _update_top_status(self):
         devices = self.connection_manager.pairing_manager.get_paired_devices()
         connected = [d for d in devices if d.connection_state == ConnectionState.CONNECTED]
-        discovered = [d for d in devices if d.presence_state == PresenceState.DISCOVERED]
 
         if connected:
+            dev = connected[0]
+            transports = self.connection_manager.get_active_transports(dev.identity.device_id)
+            trans_str = transports[0].upper() if transports else "WI-FI"
             self._top_status_dot.setText("🟢")
             self._top_status_dot.setStyleSheet("color: #10B981; font-size: 11px;")
-            self._top_status_text.setText(f"{connected[0].identity.name} (Connected)")
+            self._top_status_text.setText(f"Connected: {dev.identity.name} ({trans_str})")
         else:
             self._top_status_dot.setText("⚪")
             self._top_status_dot.setStyleSheet("color: #94A3B8; font-size: 11px;")
             self._top_status_text.setText("Disconnected (Scan QR to Connect)")
 
+        self._top_status_text.adjustSize()
+        req_width = max(240, self._top_status_text.sizeHint().width() + 55)
+        self._top_device_pill.setMinimumWidth(req_width)
+        self._top_device_pill.adjustSize()
+
     def _on_device_updated_bg(self, dev):
-        from PyQt6.QtCore import QTimer
-        # Refresh top-bar status pill, home screen device list, and send screen status
-        # so that when a device connects/disconnects the PC UI updates immediately.
-        QTimer.singleShot(0, self._update_top_status)
-        QTimer.singleShot(0, self._home.refresh_devices)
-        if hasattr(self, "_send") and hasattr(self._send, "refresh_connection_status"):
-            QTimer.singleShot(0, self._send.refresh_connection_status)
+        from PyQt6.QtCore import QMetaObject, Qt
+        QMetaObject.invokeMethod(self, "_sync_all_views", Qt.ConnectionType.QueuedConnection)
 
     def closeEvent(self, event):
+        self.connection_manager.remove_device_updated_callback(self._on_device_updated_bg)
+        for sig, slot in [
+            (getattr(self.connection_manager, "sig_device_connected", None), self._on_sig_device_connected),
+            (getattr(self.connection_manager, "sig_device_disconnected", None), self._on_sig_device_disconnected),
+            (getattr(self.connection_manager, "sig_device_updated", None), self._on_sig_device_updated),
+            (getattr(self.connection_manager, "sig_connection_state_changed", None), self._on_sig_connection_state_changed),
+        ]:
+            if sig:
+                try:
+                    sig.disconnect(slot)
+                except (TypeError, RuntimeError):
+                    pass
         if self._viewer:
             self._viewer.stop()
         self.connection_manager.stop()

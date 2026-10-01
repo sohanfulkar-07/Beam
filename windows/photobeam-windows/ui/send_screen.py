@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (
     QLabel, QFrame, QProgressBar, QFileDialog,
     QScrollArea, QSizePolicy, QLayout, QLineEdit, QMessageBox, QApplication,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QThread, QObject, QTimer
+from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot, QThread, QObject, QTimer
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QPixmap
 
 
@@ -563,6 +563,13 @@ class SendScreen(QWidget):
         self._build_ui()
         if self.connection_manager and hasattr(self.connection_manager, "add_device_updated_callback"):
             self.connection_manager.add_device_updated_callback(self._on_device_updated_from_bg)
+        if self.connection_manager:
+            if hasattr(self.connection_manager, "sig_device_updated") and self.connection_manager.sig_device_updated:
+                self.connection_manager.sig_device_updated.connect(lambda dev: self.refresh_connection_status())
+            if hasattr(self.connection_manager, "sig_device_connected") and self.connection_manager.sig_device_connected:
+                self.connection_manager.sig_device_connected.connect(lambda dev_id, tr: self.refresh_connection_status())
+            if hasattr(self.connection_manager, "sig_device_disconnected") and self.connection_manager.sig_device_disconnected:
+                self.connection_manager.sig_device_disconnected.connect(lambda dev_id: self.refresh_connection_status())
         self.refresh_connection_status()
         self.setAcceptDrops(True)
 
@@ -970,8 +977,10 @@ class SendScreen(QWidget):
 
     def _on_device_updated_from_bg(self, dev):
         """Called when a paired device connection or presence state changes in background."""
-        QTimer.singleShot(0, self.refresh_connection_status)
+        from PyQt6.QtCore import QMetaObject, Qt
+        QMetaObject.invokeMethod(self, "refresh_connection_status", Qt.ConnectionType.QueuedConnection)
 
+    @pyqtSlot()
     def refresh_connection_status(self):
         """Update connection badge and instruction dynamically based on active sessions."""
         if self._uri and self._uri.startswith("photobeam://connect/"):
