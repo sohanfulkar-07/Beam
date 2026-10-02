@@ -158,7 +158,7 @@ def test_main_window_reactive_ui_sync(qapp):
     cm.sig_device_disconnected.emit("phone-456")
     qapp.processEvents()
 
-    assert "Disconnected (Scan QR to Connect)" in win._top_status_text.text()
+    assert "Disconnected" in win._top_status_text.text()
     assert "⚪" in win._top_status_dot.text()
 
     win.close()

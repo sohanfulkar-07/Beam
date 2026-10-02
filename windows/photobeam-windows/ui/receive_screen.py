@@ -227,9 +227,13 @@ class ReceiverWorker(QObject):
         adb_path = find_adb() if adb_avail else None
         adb_reverse_active = False
         if adb_avail and adb_path:
-            if setup_adb_reverse(adb_path, remote_port=DEFAULT_PORT + 1, local_port=DEFAULT_PORT):
+            rev_tunnel = setup_adb_reverse(adb_path, remote_port=DEFAULT_PORT + 1, local_port=DEFAULT_PORT)
+            rev_direct = setup_adb_reverse(adb_path, remote_port=DEFAULT_PORT, local_port=DEFAULT_PORT)
+            if rev_tunnel or rev_direct:
                 transports.append("usb")
                 adb_reverse_active = True
+                if "127.0.0.1" not in addrs:
+                    addrs.insert(0, "127.0.0.1")
 
         session = self._session_mgr.create_session(
             addrs=addrs,
@@ -241,6 +245,11 @@ class ReceiverWorker(QObject):
         payload = self._session_mgr.build_qr_payload(session)
         uri = encode_qr_payload(payload)
 
+        # Start server listening on all interfaces BEFORE broadcasting receive offer to peers
+        server = WiFiServer(DEFAULT_PORT, cert_pem, key_pem)
+        self._server = server
+        server.start(host="")
+
         try:
             from connection_manager import ConnectionManager
             ConnectionManager.get_instance().broadcast_receive_offer(uri)
@@ -250,10 +259,6 @@ class ReceiverWorker(QObject):
         qr_png = generate_qr_png_bytes(uri, box_size=8)
         self.qr_ready.emit(qr_png, uri)
         self.status.emit("Scan QR code on the sending device")
-
-        server = WiFiServer(DEFAULT_PORT, cert_pem, key_pem)
-        self._server = server
-        server.start(host="")
 
         try:
             if self._stop.is_set():

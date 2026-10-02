@@ -25,6 +25,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.photobeam.app.data.ConnectionManager
 import com.photobeam.app.data.TransferHistoryManager
 import com.photobeam.app.data.TransferRecord
 import com.photobeam.app.protocol.*
@@ -116,6 +117,7 @@ fun SendScreen(
     var state by remember {
         mutableStateOf<SendState>(
             if (!initialQrUri.isNullOrBlank()) SendState.Connecting("Connecting to receiver...")
+            else if (initialUris.isNotEmpty()) SendState.Connecting("Connecting to receiver...")
             else SendState.Scanning
         )
     }
@@ -155,9 +157,87 @@ fun SendScreen(
         }
     }
 
+    val connMgr = remember { com.photobeam.app.data.ConnectionManager.getInstance(context) }
+
     LaunchedEffect(initialUris) {
         if (initialUris.isNotEmpty()) {
             selectedUris = initialUris
+            if (connMgr.hasActiveSession()) {
+                val endpoints = connMgr.getActiveEndpoints()
+                if (endpoints.isNotEmpty()) {
+                    val (peerIp, peerPort) = endpoints.first()
+                    val totalBytes = initialUris.sumOf { com.photobeam.app.data.DataSender.getFileNameAndSize(context, it).second }
+                    val activeMode = if (peerIp.startsWith("127.")) "USB Tunnel" else "Wi-Fi"
+                    state = SendState.Sending(
+                        statusText = "Sending files…",
+                        progress = 0f,
+                        currentFile = com.photobeam.app.data.DataSender.getFileNameAndSize(context, initialUris.first()).first,
+                        fileIndex = 1,
+                        totalFiles = initialUris.size,
+                        totalBytes = totalBytes,
+                        activeModes = activeMode
+                    )
+                    transferJob?.cancel()
+                    transferJob = scope.launch(Dispatchers.IO) {
+                        val sender = com.photobeam.app.data.DataSender(context)
+                        val startTime = System.currentTimeMillis()
+                        var completedBytes = 0L
+
+                        val ok = sender.sendFiles(
+                            peerIp = peerIp,
+                            peerPort = peerPort,
+                            uris = initialUris,
+                            onProgress = { p ->
+                                scope.launch(Dispatchers.Main) {
+                                    val currentSent = p.bytesSent
+                                    val overallSent = completedBytes + currentSent
+                                    val prog = if (totalBytes > 0) overallSent.toFloat() / totalBytes else 0f
+                                    val fileProg = if (p.totalBytes > 0) p.bytesSent.toFloat() / p.totalBytes else 0f
+                                    state = SendState.Sending(
+                                        statusText = "Sending: ${p.fileName}",
+                                        progress = prog.coerceIn(0f, 1f),
+                                        currentFile = p.fileName,
+                                        fileIndex = p.fileIndex,
+                                        totalFiles = p.totalFiles,
+                                        fileProgress = fileProg.coerceIn(0f, 1f),
+                                        totalSent = overallSent,
+                                        totalBytes = totalBytes,
+                                        speedText = "%.2f MB/s".format(p.speedMbps),
+                                        activeModes = activeMode
+                                    )
+                                }
+                            },
+                            onFileComplete = { name, success, error ->
+                                val thisSize = com.photobeam.app.data.DataSender.getFileNameAndSize(
+                                    context,
+                                    initialUris.firstOrNull { it.lastPathSegment?.contains(name) == true } ?: initialUris[0]
+                                ).second
+                                completedBytes += thisSize
+                            }
+                        )
+
+                        val durationSec = (System.currentTimeMillis() - startTime) / 1000.0
+                        withContext(Dispatchers.Main) {
+                            if (ok) {
+                                state = SendState.Complete(
+                                    fileCount = initialUris.size,
+                                    totalBytes = totalBytes,
+                                    durationSec = durationSec
+                                )
+                            } else {
+                                state = SendState.Error("Transfer interrupted or failed")
+                            }
+                        }
+                    }
+                    return@LaunchedEffect
+                }
+            }
+            if (initialQrUri.isNullOrBlank()) {
+                if (state is SendState.Scanning || state is SendState.Error) {
+                    state = SendState.Connecting("Connecting to receiver…")
+                }
+                connMgr.requestReceiverOffer()
+            }
         }
     }
 
@@ -169,9 +249,9 @@ fun SendScreen(
     }
 
     // Auto-connect from cached receive offer or live offer flow over active session
-    val connMgr = remember { com.photobeam.app.data.ConnectionManager.getInstance(context) }
     LaunchedEffect(Unit) {
         if (initialQrUri.isNullOrBlank()) {
+            connMgr.requestReceiverOffer()
             val cached = connMgr.getLatestReceiveOffer()
             if (!cached.isNullOrBlank() && cached.startsWith("photobeam://connect/")) {
                 android.util.Log.i("PhotoBeam", "Using cached receive offer from connected session: $cached")
@@ -179,7 +259,7 @@ fun SendScreen(
             }
         }
         connMgr.receiveOfferFlow.collect { (peerId, offerUri) ->
-            if (state is SendState.Scanning && offerUri.startsWith("photobeam://connect/")) {
+            if ((state is SendState.Scanning || state is SendState.Error || state is SendState.Connecting) && offerUri.startsWith("photobeam://connect/")) {
                 android.util.Log.i("PhotoBeam", "Received live receive offer from $peerId: $offerUri")
                 startConnect(offerUri)
             }
@@ -187,7 +267,7 @@ fun SendScreen(
     }
 
     var autoStarted by remember { mutableStateOf(false) }
-    LaunchedEffect(state) {
+    LaunchedEffect(state, selectedUris) {
         val s = state
         // Update notification text based on state
         when (s) {
@@ -199,7 +279,7 @@ fun SendScreen(
             is SendState.Paused -> com.photobeam.app.service.ConnectionForegroundService.update(context, "Transfer paused")
             else -> {}
         }
-        if (!autoStarted && s is SendState.ReadyToSend && selectedUris.isNotEmpty() && initialUris.isNotEmpty()) {
+        if (!autoStarted && s is SendState.ReadyToSend && selectedUris.isNotEmpty()) {
             autoStarted = true
             val conn = s.connection
             val urisCopy = selectedUris.toList()
@@ -888,6 +968,7 @@ fun SendScreen(
                                             activeConnection?.disconnectAll()
                                             activeConnection = null
                                             state = SendState.Scanning
+                                            connMgr.requestReceiverOffer()
                                         },
                                         onCancel = onBack,
                                         retryText = "Try Again",
@@ -997,6 +1078,13 @@ private suspend fun connectAndAuthenticate(
     Log.d(TAG, "[PERF] QR parsed in ${tDecode - t0}ms. SId: ${payload.sid}, Port: ${payload.port}, Addrs: ${payload.addrs}")
 
     if (payload.isExpired()) {
+        val cm = com.photobeam.app.data.ConnectionManager.getInstance()
+        if (cm?.hasActiveUsbSession() == true || cm?.hasActiveSession() == true) {
+            Log.i(TAG, "QR expired; requesting fresh receive offer from connected peer...")
+            cm.requestReceiverOffer()
+            onState(SendState.Connecting("Refreshing connection..."))
+            return@withContext
+        }
         onState(SendState.Error("QR expired. Ask receiver for a new code."))
         return@withContext
     }
@@ -1008,6 +1096,13 @@ private suspend fun connectAndAuthenticate(
         connectFastestTransport(payload, timeoutMs = 2500)
     } catch (e: Exception) {
         Log.e(TAG, "[PERF] Socket connection failed: ${e.message}", e)
+        val cm = com.photobeam.app.data.ConnectionManager.getInstance()
+        if (cm?.hasActiveUsbSession() == true || cm?.hasActiveSession() == true) {
+            Log.i(TAG, "Connection failed on candidates; requesting fresh offer from connected peer...")
+            cm.requestReceiverOffer()
+            onState(SendState.Connecting("Refreshing connection..."))
+            return@withContext
+        }
         onState(SendState.Error(e.message ?: "Failed to connect to receiver"))
         return@withContext
     }
@@ -1044,12 +1139,26 @@ private suspend fun connectAndAuthenticate(
             val errCode = ack.optString("code", "unknown")
             Log.e(TAG, "[PERF] Auth rejected by receiver: $errCode")
             primaryTransport.disconnect()
+            val cm = com.photobeam.app.data.ConnectionManager.getInstance()
+            if (cm?.hasActiveUsbSession() == true || cm?.hasActiveSession() == true) {
+                Log.i(TAG, "Auth rejected on stale session; requesting fresh receive offer from connected peer...")
+                cm.requestReceiverOffer()
+                onState(SendState.Connecting("Refreshing connection..."))
+                return@withContext
+            }
             onState(SendState.Error("Auth failed: $errCode"))
             return@withContext
         }
     } catch (e: Exception) {
         Log.e(TAG, "[PERF] Handshake error: ${e.message}", e)
         primaryTransport.disconnect()
+        val cm = com.photobeam.app.data.ConnectionManager.getInstance()
+        if (cm?.hasActiveUsbSession() == true || cm?.hasActiveSession() == true) {
+            Log.i(TAG, "Handshake failed on stale session; requesting fresh receive offer from connected peer...")
+            cm.requestReceiverOffer()
+            onState(SendState.Connecting("Refreshing connection..."))
+            return@withContext
+        }
         onState(SendState.Error("Handshake error: ${e.message ?: e.javaClass.simpleName}"))
         return@withContext
     }
@@ -1084,42 +1193,88 @@ private suspend fun connectAndAuthenticate(
     }
 }
 
+private data class TransportCandidate(
+    val host: String,
+    val port: Int,
+    val transportId: String,
+    val priority: Int = 10,
+)
+
 /**
- * Parallel race across all advertised receiver addresses (including USB tunnel if enabled).
+ * Parallel race across all advertised receiver addresses (including USB tunnel if enabled/detected).
  * Connects to the first reachable address in parallel; cancels losers immediately.
  */
 private suspend fun connectFastestTransport(
     payload: QRPayload,
     timeoutMs: Int = 2500,
 ): Pair<WiFiTransport, String> = withContext(Dispatchers.IO) {
-    if (payload.addrs.isEmpty() && !payload.transports.contains("usb")) {
-        error("No receiver addresses provided in QR")
+    val connMgr = ConnectionManager.getInstance()
+    val isUsbDetected = payload.transports.contains("usb") ||
+            payload.addrs.any { it.contains("127.0.0.1") } ||
+            (connMgr?.hasActiveUsbSession() == true)
+
+    val candidateSet = mutableListOf<TransportCandidate>()
+
+    // 1. USB Tunnel Candidates:
+    // Remote ADB reverse tunnel forwards 47475 and 47474 from device loopback to PC receiver.
+    // If USB is detected or active, these get high priority (priority 0).
+    // Even if not explicitly flagged, always include 127.0.0.1 (low priority 20) as fallback.
+    val usbPriority = if (isUsbDetected) 0 else 20
+    candidateSet.add(TransportCandidate("127.0.0.1", 47475, "usb", usbPriority))
+    if (payload.port != 47475) {
+        candidateSet.add(TransportCandidate("127.0.0.1", payload.port, "usb", usbPriority))
     }
 
-    var winner: Pair<WiFiTransport, String>? = null
-
-    // Try Wi-Fi addresses sequentially
+    // 2. Wi-Fi / Network Candidates from QR payload
     for (addr in payload.addrs) {
-        try {
-            val t = WiFiTransport("wifi")
-            t.connect(addr, payload.port, timeoutMs)
-            winner = Pair(t, "$addr:${payload.port}")
-            break
-        } catch (_: Exception) {
-            continue
+        if (!addr.startsWith("127.") && !addr.startsWith("169.254.")) {
+            candidateSet.add(TransportCandidate(addr, payload.port, "wifi", 10))
         }
     }
 
-    // Fall back to USB reverse tunnel if Wi-Fi did not connect
-    if (winner == null && payload.transports.contains("usb")) {
-        try {
-            val t = WiFiTransport("usb")
-            t.connect("127.0.0.1", 47475, timeoutMs)
-            winner = Pair(t, "127.0.0.1:47475 (USB)")
-        } catch (_: Exception) {}
+    val candidates = candidateSet.distinctBy { "${it.host}:${it.port}" }.sortedBy { it.priority }
+    if (candidates.isEmpty()) {
+        error("No receiver addresses available")
     }
 
-    winner ?: error("Could not reach receiver at any of: ${payload.addrs.joinToString()}")
+    Log.i(TAG, "[CONNECT_RACE] Starting parallel race across candidates: ${candidates.joinToString { "${it.host}:${it.port}(${it.transportId})" }} (isUsbDetected=$isUsbDetected)")
+
+    val winner = CompletableDeferred<Pair<WiFiTransport, String>>()
+    val raceScope = CoroutineScope(Dispatchers.IO)
+    val jobs = candidates.map { candidate ->
+        raceScope.launch {
+            // For Wi-Fi when USB is detected, slightly delay Wi-Fi attempt by 200ms so USB gets fast-path chance
+            if (isUsbDetected && candidate.transportId != "usb") {
+                delay(200L)
+            }
+            if (winner.isCompleted) return@launch
+
+            val t = WiFiTransport(candidate.transportId)
+            try {
+                t.connect(candidate.host, candidate.port, timeoutMs)
+                val label = "${candidate.host}:${candidate.port} (${candidate.transportId.uppercase()})"
+                if (winner.complete(Pair(t, label))) {
+                    Log.i(TAG, "[CONNECT_RACE] Winner connected: $label")
+                } else {
+                    t.disconnect()
+                }
+            } catch (e: Exception) {
+                // Ignore failure for individual candidate
+            }
+        }
+    }
+
+    val result = try {
+        withTimeoutOrNull(timeoutMs.toLong() + 1000L) {
+            winner.await()
+        }
+    } catch (e: Exception) {
+        null
+    } finally {
+        jobs.forEach { it.cancel() }
+    }
+
+    result ?: error("Could not reach receiver at any of: ${candidates.joinToString { "${it.host}:${it.port}" }}")
 }
 
 /**
@@ -1136,12 +1291,15 @@ private suspend fun probeSecondaryUsbAsync(
     if (isPrimaryUsb) {
         // Primary was USB; probe Wi-Fi addresses as secondary
         for (addr in payload.addrs) {
-            candidates.add(Pair(addr, payload.port))
+            if (!addr.startsWith("127.")) {
+                candidates.add(Pair(addr, payload.port))
+            }
         }
     } else {
-        // Primary was Wi-Fi; probe USB
-        if (payload.transports.contains("usb")) {
-            candidates.add(Pair("127.0.0.1", 47475))
+        // Primary was Wi-Fi; probe USB reverse tunnel ports
+        candidates.add(Pair("127.0.0.1", 47475))
+        if (payload.port != 47475) {
+            candidates.add(Pair("127.0.0.1", payload.port))
         }
         // Also probe RNDIS
         val otherAddrs = payload.addrs.filter { !it.contains("127.0.0.1") }

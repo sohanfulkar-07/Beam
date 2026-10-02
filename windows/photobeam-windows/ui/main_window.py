@@ -95,6 +95,8 @@ class MainWindow(QMainWindow):
             self.connection_manager.sig_device_updated.connect(self._on_sig_device_updated)
         if hasattr(self.connection_manager, "sig_connection_state_changed") and self.connection_manager.sig_connection_state_changed:
             self.connection_manager.sig_connection_state_changed.connect(self._on_sig_connection_state_changed)
+        if hasattr(self.connection_manager, "sig_request_receive") and self.connection_manager.sig_request_receive:
+            self.connection_manager.sig_request_receive.connect(self._on_sig_request_receive)
 
         # Register mirror stream callback — fires when Android initiates mirroring
         self.connection_manager.set_mirror_stream_callback(self._on_mirror_stream_bg)
@@ -321,6 +323,12 @@ class MainWindow(QMainWindow):
         self.raise_()
         self.activateWindow()
 
+    def _on_sig_request_receive(self, device_id: str):
+        """Automatically switch to ReceiveScreen and prepare to accept incoming files."""
+        self._show_receive()
+        self.raise_()
+        self.activateWindow()
+
     def _create_nav_item(self, label: str, icon_name: str, target_idx: int) -> QPushButton:
         btn = QPushButton(f" {label}")
         btn.setIcon(get_icon(icon_name, "#94A3B8", "#38BDF8", 16))
@@ -430,6 +438,14 @@ class MainWindow(QMainWindow):
         if hasattr(self._send, "set_selected_files"):
             self._send.set_selected_files(file_paths)
 
+    @pyqtSlot(str)
+    def _on_sig_request_receive(self, peer_id: str):
+        logger.info("[MAIN] Received REQUEST_RECEIVE from %s, switching to ReceiveScreen", peer_id)
+        self._show_receive()
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
     @pyqtSlot(str, str)
     def _on_sig_device_connected(self, device_id: str, transport_type: str):
         self._sync_all_views()
@@ -489,7 +505,7 @@ class MainWindow(QMainWindow):
         else:
             self._top_status_dot.setText("⚪")
             self._top_status_dot.setStyleSheet("color: #94A3B8; font-size: 11px;")
-            self._top_status_text.setText("Disconnected (Scan QR to Connect)")
+            self._top_status_text.setText("Disconnected")
             if hasattr(self, "_top_conn_toggle_btn"):
                 if devices:
                     self._top_conn_toggle_btn.setVisible(True)
@@ -514,6 +530,7 @@ class MainWindow(QMainWindow):
             (getattr(self.connection_manager, "sig_device_disconnected", None), self._on_sig_device_disconnected),
             (getattr(self.connection_manager, "sig_device_updated", None), self._on_sig_device_updated),
             (getattr(self.connection_manager, "sig_connection_state_changed", None), self._on_sig_connection_state_changed),
+            (getattr(self.connection_manager, "sig_request_receive", None), self._on_sig_request_receive),
         ]:
             if sig:
                 try:

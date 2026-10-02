@@ -393,6 +393,34 @@ class ProtocolUnitTest {
             tmp.delete()
         }
     }
+
+    @Test
+    fun testProtocolV2FramingAndHeaderRoundtrip() {
+        val json = org.json.JSONObject().apply {
+            put("type", "HELLO")
+            put("device_id", "test-dev-456")
+            put("ts", 123456789L)
+        }
+        val baos = java.io.ByteArrayOutputStream()
+        assertTrue(ProtocolV2.sendFramedMsg(baos, json))
+
+        val bais = java.io.ByteArrayInputStream(baos.toByteArray())
+        val decoded = ProtocolV2.recvFramedMsg(bais)
+        assertNotNull(decoded)
+        assertEquals("HELLO", decoded?.getString("type"))
+        assertEquals("test-dev-456", decoded?.getString("device_id"))
+
+        val tid = 98765432109876L
+        val size = 50L * 1024L * 1024L * 1024L // 50 GB
+        val filename = "ubuntu-24.04-desktop-amd64.iso"
+        val headerBytes = ProtocolV2.packDataHeader(tid, size, filename)
+        val headerIn = java.io.ByteArrayInputStream(headerBytes)
+        val unpacked = ProtocolV2.unpackDataHeader(headerIn)
+        assertNotNull(unpacked)
+        assertEquals(tid, unpacked?.first)
+        assertEquals(size, unpacked?.second)
+        assertEquals(filename, unpacked?.third)
+    }
 }
 
 private class MockTransport(id: String) : com.photobeam.app.transport.Transport(id) {

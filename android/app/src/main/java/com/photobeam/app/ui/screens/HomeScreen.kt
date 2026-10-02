@@ -157,295 +157,83 @@ fun HomeScreen(
 
         // ── Main Content ──────────────────────────────────────────────────────
         if (connectedDevice != null) {
-            // ── Active Session Hero Card ──────────────────────────────────────
+            // ── Single Active Session Card (Only card shown when connected) ──
             ActiveSessionCard(
                 device = connectedDevice,
                 onSendFiles = {
-                    // Open system file picker directly — no QR/connect step needed
                     filePicker.launch(arrayOf("*/*"))
                 },
                 onDisconnect = {
                     connectionManager.disconnectDevice(connectedDevice.identity.deviceId)
                 }
             )
-
-            // ── Receive tile (still useful even when connected) ───────────────
+        } else {
+            // ── Disconnected Hero Card ────────────────────────────────────────
             TactileCard(
                 modifier = Modifier.fillMaxWidth(),
-                cornerRadius = 18.dp,
-                backgroundColor = Surface,
-                borderColor = CardBorder,
-                onClick = onNavigateReceive
+                backgroundColor = SurfaceElevated,
+                borderColor = CyanAccent.copy(alpha = 0.45f),
+                elevation = 8.dp,
             ) {
-                Row(
+                Column(
                     modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
-                    TactileGlowRing(size = 40.dp, ringColor = CyanAccent) {
-                        Text("📥", fontSize = 18.sp)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                            modifier = Modifier.weight(1f, fill = false),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            TactileGlowRing(size = 46.dp, ringColor = CyanAccent, pulse = false) {
+                                Text("💻", fontSize = 22.sp)
+                            }
+                            Column {
+                                Text(
+                                    text = "Connect to PC",
+                                    fontSize = 17.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = OnBackground,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = "Pair via Wi-Fi or USB cable",
+                                    fontSize = 12.sp,
+                                    color = OnSurfaceVariant,
+                                    maxLines = 1
+                                )
+                            }
+                        }
+                        TactileBadge("⚪ Disconnected", OnSurfaceVariant)
                     }
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            "Receive Files",
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = OnBackground,
-                            maxLines = 1
-                        )
-                        Text(
-                            "Ready for incoming from PC",
-                            fontSize = 11.sp,
-                            color = OnSurfaceVariant,
-                            maxLines = 1
-                        )
-                    }
-                    Text("›", fontSize = 20.sp, color = OnSurfaceVariant)
+
+                    TactilePillButton(
+                        text = "📷 Scan PC QR Code",
+                        active = true,
+                        onClick = onNavigatePair,
+                        modifier = Modifier.fillMaxWidth(),
+                        minHeight = 46.dp
+                    )
                 }
             }
 
-            // ── Trusted Devices section — exclude the currently connected one ─
-            if (otherDevices.isNotEmpty()) {
+            // ── Trusted Devices list with Connect & Delete ────────────────────
+            val trustedDevices = pairedDevices.filter { it.identity.trustStatus == TrustStatus.TRUSTED }
+            if (trustedDevices.isNotEmpty()) {
                 TrustedDevicesSection(
-                    pairedDevices = otherDevices,
+                    pairedDevices = trustedDevices,
                     connectionManager = connectionManager,
                     context = context,
                     onNavigateSend = onNavigateSend,
                     onNavigateMirror = onNavigateMirror,
-                    showCount = false
+                    showCount = true
                 )
             }
-
-        } else {
-            // ── Disconnected Hero Card ────────────────────────────────────────
-            val trustedDevices = pairedDevices.filter { it.identity.trustStatus == TrustStatus.TRUSTED }
-            if (trustedDevices.isNotEmpty()) {
-                val primaryDev = trustedDevices.first()
-                val isConnecting = primaryDev.connectionState == ConnectionState.CONNECTING
-                TactileCard(
-                    modifier = Modifier.fillMaxWidth(),
-                    backgroundColor = SurfaceElevated,
-                    borderColor = if (isConnecting) PrimaryGlow.copy(alpha = 0.5f) else CyanAccent.copy(alpha = 0.35f),
-                    elevation = 6.dp,
-                ) {
-                    Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Row(
-                                modifier = Modifier.weight(1f, fill = false),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(10.dp)
-                            ) {
-                                TactileGlowRing(
-                                    size = 42.dp,
-                                    ringColor = if (isConnecting) PrimaryLight else CyanAccent,
-                                    pulse = isConnecting
-                                ) {
-                                    Text(if (isConnecting) "🔄" else "💻", fontSize = 20.sp)
-                                }
-                                Column {
-                                    Text(
-                                        text = primaryDev.identity.name,
-                                        fontSize = 15.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = OnBackground,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                    Text(
-                                        text = if (isConnecting) "Connecting to device…" else "Ready to connect",
-                                        fontSize = 11.sp,
-                                        color = OnSurfaceVariant,
-                                        maxLines = 1
-                                    )
-                                }
-                            }
-                            Spacer(Modifier.width(8.dp))
-                            if (isConnecting) {
-                                TactileBadge("🟡 Connecting", PrimaryLight)
-                            } else {
-                                TactileBadge("⚪ Disconnected", OnSurfaceVariant)
-                            }
-                        }
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            TactilePillButton(
-                                text = if (isConnecting) "Connecting…" else "▶ Connect",
-                                active = !isConnecting,
-                                onClick = {
-                                    if (!isConnecting) {
-                                        connectionManager.connectDevice(
-                                            deviceId = primaryDev.identity.deviceId,
-                                            onConnected = {
-                                                Handler(Looper.getMainLooper()).post {
-                                                    Toast.makeText(context, "Connected to ${primaryDev.identity.name}", Toast.LENGTH_SHORT).show()
-                                                }
-                                            },
-                                            onFailed = { err ->
-                                                Handler(Looper.getMainLooper()).post {
-                                                    Toast.makeText(context, "Connection failed: $err", Toast.LENGTH_SHORT).show()
-                                                }
-                                            }
-                                        )
-                                    }
-                                },
-                                modifier = Modifier.weight(1f),
-                                minHeight = 44.dp
-                            )
-                            TactilePillButton(
-                                text = "📷 Scan QR",
-                                active = false,
-                                onClick = onNavigatePair,
-                                modifier = Modifier.weight(0.85f),
-                                minHeight = 44.dp
-                            )
-                        }
-                    }
-                }
-            } else {
-                // No paired devices — show onboarding card
-                TactileCard(
-                    modifier = Modifier.fillMaxWidth(),
-                    backgroundColor = SurfaceElevated,
-                    borderColor = CyanAccent.copy(alpha = 0.35f),
-                    elevation = 6.dp,
-                    onClick = onNavigatePair
-                ) {
-                    Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Row(
-                                modifier = Modifier.weight(1f, fill = false),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(10.dp)
-                            ) {
-                                TactileGlowRing(size = 42.dp, ringColor = CyanAccent, pulse = false) {
-                                    Text("📷", fontSize = 20.sp)
-                                }
-                                Column {
-                                    Text(
-                                        text = "Scan PC QR to Connect",
-                                        fontSize = 15.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = OnBackground,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                    Text(
-                                        text = "Point camera at PC to pair",
-                                        fontSize = 11.sp,
-                                        color = OnSurfaceVariant,
-                                        maxLines = 1
-                                    )
-                                }
-                            }
-                            Spacer(Modifier.width(8.dp))
-                            TactileBadge("⚪ Disconnected", OnSurfaceVariant)
-                        }
-
-                        TactilePillButton(
-                            text = "📷 Scan PC QR Code",
-                            active = true,
-                            onClick = onNavigatePair,
-                            modifier = Modifier.fillMaxWidth(),
-                            minHeight = 44.dp
-                        )
-                    }
-                }
-            }
-
-            // ── Quick Actions: Send & Receive (only when disconnected) ─────────
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                TactileCard(
-                    modifier = Modifier.weight(1f),
-                    cornerRadius = 20.dp,
-                    backgroundColor = Surface,
-                    borderColor = CardBorder,
-                    onClick = onNavigateSend
-                ) {
-                    Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        TactileGlowRing(size = 46.dp, ringColor = PrimaryLight) {
-                            Text("📤", fontSize = 20.sp)
-                        }
-                        Text(
-                            "Send Files",
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = OnBackground,
-                            maxLines = 1
-                        )
-                        Text(
-                            "Select or scan QR",
-                            fontSize = 11.sp,
-                            color = OnSurfaceVariant,
-                            maxLines = 1
-                        )
-                    }
-                }
-
-                TactileCard(
-                    modifier = Modifier.weight(1f),
-                    cornerRadius = 20.dp,
-                    backgroundColor = Surface,
-                    borderColor = CardBorder,
-                    onClick = onNavigateReceive
-                ) {
-                    Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        TactileGlowRing(size = 46.dp, ringColor = CyanAccent) {
-                            Text("📥", fontSize = 20.sp)
-                        }
-                        Text(
-                            "Receive",
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = OnBackground,
-                            maxLines = 1
-                        )
-                        Text(
-                            "Ready for incoming",
-                            fontSize = 11.sp,
-                            color = OnSurfaceVariant,
-                            maxLines = 1
-                        )
-                    }
-                }
-            }
-
-            // ── Trusted Devices (all of them when disconnected) ───────────────
-            TrustedDevicesSection(
-                pairedDevices = pairedDevices,
-                connectionManager = connectionManager,
-                context = context,
-                onNavigateSend = onNavigateSend,
-                onNavigateMirror = onNavigateMirror,
-                showCount = true
-            )
         }
     }
 }
@@ -458,9 +246,9 @@ private fun ActiveSessionCard(
     onSendFiles: () -> Unit,
     onDisconnect: () -> Unit,
 ) {
-    val transportStr = device.endpoint?.transports?.joinToString(" · ") {
-        if (it == "usb") "⚡ USB" else "📶 Wi-Fi"
-    } ?: "📶 Connected"
+    val isUsb = device.endpoint?.transports?.contains("usb") == true
+    val transportStr = if (isUsb) "USB Tunnel" else "Wi-Fi"
+    val transportBadgeColor = if (isUsb) CyanAccent else Secondary
 
     TactileCard(
         modifier = Modifier.fillMaxWidth(),
@@ -475,7 +263,7 @@ private fun ActiveSessionCard(
         ) {
             TactileGlowRing(size = 50.dp, ringColor = Secondary, pulse = true) {
                 Text(
-                    text = if (device.identity.name.contains("PC", true) || device.identity.name.contains("Windows", true) || device.identity.name.contains("LOQ", true)) "💻" else "📱",
+                    text = "💻",
                     fontSize = 24.sp
                 )
             }
@@ -489,20 +277,20 @@ private fun ActiveSessionCard(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                Text(
-                    text = transportStr,
-                    fontSize = 12.sp,
-                    color = CyanAccent,
-                    maxLines = 1,
-                    modifier = Modifier.padding(top = 2.dp)
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.padding(top = 4.dp)
+                ) {
+                    TactileBadge(transportStr, transportBadgeColor)
+                }
             }
             TactileBadge("🟢 Connected", Secondary)
         }
 
         Spacer(Modifier.height(14.dp))
 
-        // Action buttons — exactly two, properly weighted so text never clips
+        // Action buttons — exactly two primary buttons: 📤 Send Files and Disconnect
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -518,7 +306,7 @@ private fun ActiveSessionCard(
                 text = "Disconnect",
                 active = false,
                 onClick = onDisconnect,
-                modifier = Modifier.weight(0.8f),
+                modifier = Modifier.weight(1f),
                 minHeight = 44.dp
             )
         }

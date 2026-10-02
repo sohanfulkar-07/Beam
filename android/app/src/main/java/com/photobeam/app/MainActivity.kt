@@ -119,19 +119,27 @@ class MainActivity : ComponentActivity() {
         }
         intent?.getStringArrayExtra("stream_uris")?.let { arr ->
             sharedUris = arr.map { Uri.parse(it) }
+            initialScreen = "send"
         }
         intent?.getStringExtra("stream_uri")?.let { s ->
             sharedUris = listOf(Uri.parse(s))
+            initialScreen = "send"
         }
         when (intent?.action) {
             Intent.ACTION_SEND -> {
                 val uri = intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
-                if (uri != null) sharedUris = listOf(uri)
+                if (uri != null) {
+                    sharedUris = listOf(uri)
+                    initialScreen = "send"
+                }
             }
             Intent.ACTION_SEND_MULTIPLE -> {
                 @Suppress("UNCHECKED_CAST")
                 val uris = intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)
-                if (!uris.isNullOrEmpty()) sharedUris = uris
+                if (!uris.isNullOrEmpty()) {
+                    sharedUris = uris
+                    initialScreen = "send"
+                }
             }
         }
         intent?.getStringExtra("screen")?.let {
@@ -155,8 +163,15 @@ fun PhotoBeamApp(
 
     // Mutable so the HomeScreen can inject URIs picked from the file picker
     var activeSharedUris by remember(initialSharedUris) { mutableStateOf(initialSharedUris) }
+    var activeQrUri by remember(initialQrUri) { mutableStateOf(initialQrUri) }
 
-    LaunchedEffect(initialScreen, initialQrUri) {
+    LaunchedEffect(initialSharedUris) {
+        if (initialSharedUris.isNotEmpty()) {
+            activeSharedUris = initialSharedUris
+        }
+    }
+
+    LaunchedEffect(initialScreen, initialQrUri, initialSharedUris) {
         if (initialScreen != null) {
             navController.navigate(initialScreen) {
                 launchSingleTop = true
@@ -190,13 +205,20 @@ fun PhotoBeamApp(
         composable("home") {
             HomeScreen(
                 onNavigateReceive = { navController.navigate("receive") },
-                onNavigateSend = { navController.navigate("send") },
+                onNavigateSend = {
+                    activeQrUri = null
+                    navController.navigate("send")
+                },
                 onNavigateSendWithFiles = { uris ->
                     // Inject picked URIs then navigate to SendScreen immediately
                     activeSharedUris = uris
+                    activeQrUri = null
                     navController.navigate("send") { launchSingleTop = true }
                 },
-                onNavigatePair = { navController.navigate("pair") },
+                onNavigatePair = {
+                    activeQrUri = null
+                    navController.navigate("pair")
+                },
                 onNavigateHistory = { navController.navigate("history") },
                 onNavigateMirror = { deviceId ->
                     navController.navigate("mirror/$deviceId") {
@@ -207,9 +229,15 @@ fun PhotoBeamApp(
         }
         composable("pair") {
             PairScreen(
-                onBack = { navigateBackOrHome() },
-                onPairingComplete = { navigateBackOrHome() },
-                initialQrUri = initialQrUri,
+                onBack = {
+                    activeQrUri = null
+                    navigateBackOrHome()
+                },
+                onPairingComplete = {
+                    activeQrUri = null
+                    navigateBackOrHome()
+                },
+                initialQrUri = activeQrUri,
             )
         }
         composable("receive") {
@@ -222,13 +250,14 @@ fun PhotoBeamApp(
         composable("send") {
             SendScreen(
                 onBack = {
-                    // Clear injected URIs when leaving send screen
+                    // Clear injected URIs and one-time QR when leaving send screen
                     activeSharedUris = emptyList<Uri>()
+                    activeQrUri = null
                     navigateBackOrHome()
                 },
                 onNavigateHistory = { navController.navigate("history") },
                 initialUris = activeSharedUris,
-                initialQrUri = initialQrUri,
+                initialQrUri = activeQrUri,
             )
         }
         composable("history") {
