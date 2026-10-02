@@ -183,38 +183,56 @@ fun SendScreen(
                         val startTime = System.currentTimeMillis()
                         var completedBytes = 0L
 
-                        val ok = sender.sendFiles(
-                            peerIp = peerIp,
-                            peerPort = peerPort,
-                            uris = initialUris,
-                            onProgress = { p ->
-                                scope.launch(Dispatchers.Main) {
-                                    val currentSent = p.bytesSent
-                                    val overallSent = completedBytes + currentSent
-                                    val prog = if (totalBytes > 0) overallSent.toFloat() / totalBytes else 0f
-                                    val fileProg = if (p.totalBytes > 0) p.bytesSent.toFloat() / p.totalBytes else 0f
-                                    state = SendState.Sending(
-                                        statusText = "Sending: ${p.fileName}",
-                                        progress = prog.coerceIn(0f, 1f),
-                                        currentFile = p.fileName,
-                                        fileIndex = p.fileIndex,
-                                        totalFiles = p.totalFiles,
-                                        fileProgress = fileProg.coerceIn(0f, 1f),
-                                        totalSent = overallSent,
-                                        totalBytes = totalBytes,
-                                        speedText = "%.2f MB/s".format(p.speedMbps),
-                                        activeModes = activeMode
-                                    )
-                                }
-                            },
-                            onFileComplete = { name, success, error ->
-                                val thisSize = com.photobeam.app.data.DataSender.getFileNameAndSize(
-                                    context,
-                                    initialUris.firstOrNull { it.lastPathSegment?.contains(name) == true } ?: initialUris[0]
-                                ).second
-                                completedBytes += thisSize
+                        var ok = false
+                        for (endpoint in endpoints) {
+                            val (peerIp, peerPort) = endpoint
+                            val activeMode = if (peerIp.startsWith("127.")) "USB Tunnel" else "Wi-Fi"
+                            withContext(Dispatchers.Main) {
+                                state = SendState.Sending(
+                                    statusText = "Sending files…",
+                                    progress = 0f,
+                                    currentFile = com.photobeam.app.data.DataSender.getFileNameAndSize(context, initialUris.first()).first,
+                                    fileIndex = 1,
+                                    totalFiles = initialUris.size,
+                                    totalBytes = totalBytes,
+                                    activeModes = activeMode
+                                )
                             }
-                        )
+
+                            ok = sender.sendFiles(
+                                peerIp = peerIp,
+                                peerPort = peerPort,
+                                uris = initialUris,
+                                onProgress = { p ->
+                                    scope.launch(Dispatchers.Main) {
+                                        val currentSent = p.bytesSent
+                                        val overallSent = completedBytes + currentSent
+                                        val prog = if (totalBytes > 0) overallSent.toFloat() / totalBytes else 0f
+                                        val fileProg = if (p.totalBytes > 0) p.bytesSent.toFloat() / p.totalBytes else 0f
+                                        state = SendState.Sending(
+                                            statusText = "Sending: ${p.fileName}",
+                                            progress = prog.coerceIn(0f, 1f),
+                                            currentFile = p.fileName,
+                                            fileIndex = p.fileIndex,
+                                            totalFiles = p.totalFiles,
+                                            fileProgress = fileProg.coerceIn(0f, 1f),
+                                            totalSent = overallSent,
+                                            totalBytes = totalBytes,
+                                            speedText = "%.2f MB/s".format(p.speedMbps),
+                                            activeModes = activeMode
+                                        )
+                                    }
+                                },
+                                onFileComplete = { name, success, error ->
+                                    val thisSize = com.photobeam.app.data.DataSender.getFileNameAndSize(
+                                        context,
+                                        initialUris.firstOrNull { it.lastPathSegment?.contains(name) == true } ?: initialUris[0]
+                                    ).second
+                                    completedBytes += thisSize
+                                }
+                            )
+                            if (ok) break
+                        }
 
                         val durationSec = (System.currentTimeMillis() - startTime) / 1000.0
                         withContext(Dispatchers.Main) {
@@ -644,11 +662,85 @@ fun SendScreen(
                                     Button(
                                         onClick = {
                                             val urisCopy = selectedUris.toList()
-                                            transferJob = scope.launch(Dispatchers.IO) {
-                                                runTransfer(context, s.connection, urisCopy, transferControl) { newState ->
-                                                    withContext(Dispatchers.Main) { state = newState }
-                                                }
-                                            }
+                                            val endpoints = connMgr.getActiveEndpoints()
+                                            if (connMgr.hasActiveSession() && endpoints.isNotEmpty()) {
+                                                transferJob = scope.launch(Dispatchers.IO) {
+                                                    val sender = com.photobeam.app.data.DataSender(context)
+                                                    val startTime = System.currentTimeMillis()
+                                                    val totalBytes = urisCopy.sumOf { com.photobeam.app.data.DataSender.getFileNameAndSize(context, it).second }
+                                                    var completedBytes = 0L
+
+                                                    var ok = false
+                                                    for (endpoint in endpoints) {
+                                                         val (peerIp, peerPort) = endpoint
+                                                         val activeMode = if (peerIp.startsWith("127.")) "USB Tunnel" else "Wi-Fi"
+                                                         withContext(Dispatchers.Main) {
+                                                             state = SendState.Sending(
+                                                                 statusText = "Sending files…",
+                                                                 progress = 0f,
+                                                                 currentFile = com.photobeam.app.data.DataSender.getFileNameAndSize(context, urisCopy.first()).first,
+                                                                 fileIndex = 1,
+                                                                 totalFiles = urisCopy.size,
+                                                                 totalBytes = totalBytes,
+                                                                 activeModes = activeMode
+                                                             )
+                                                         }
+
+                                                         ok = sender.sendFiles(
+                                                             peerIp = peerIp,
+                                                             peerPort = peerPort,
+                                                             uris = urisCopy,
+                                                             onProgress = { p ->
+                                                                 scope.launch(Dispatchers.Main) {
+                                                                     val currentSent = p.bytesSent
+                                                                     val overallSent = completedBytes + currentSent
+                                                                     val prog = if (totalBytes > 0) overallSent.toFloat() / totalBytes else 0f
+                                                                     val fileProg = if (p.totalBytes > 0) p.bytesSent.toFloat() / p.totalBytes else 0f
+                                                                     state = SendState.Sending(
+                                                                         statusText = "Sending: ${p.fileName}",
+                                                                         progress = prog.coerceIn(0f, 1f),
+                                                                         currentFile = p.fileName,
+                                                                         fileIndex = p.fileIndex,
+                                                                         totalFiles = p.totalFiles,
+                                                                         fileProgress = fileProg.coerceIn(0f, 1f),
+                                                                         totalSent = overallSent,
+                                                                         totalBytes = totalBytes,
+                                                                         speedText = "%.2f MB/s".format(p.speedMbps),
+                                                                         activeModes = activeMode
+                                                                     )
+                                                                 }
+                                                             },
+                                                             onFileComplete = { name, success, error ->
+                                                                 val thisSize = com.photobeam.app.data.DataSender.getFileNameAndSize(
+                                                                     context,
+                                                                     urisCopy.firstOrNull { it.lastPathSegment?.contains(name) == true } ?: urisCopy[0]
+                                                                 ).second
+                                                                 completedBytes += thisSize
+                                                             }
+                                                         )
+                                                         if (ok) break
+                                                     }
+
+                                                     val durationSec = (System.currentTimeMillis() - startTime) / 1000.0
+                                                     withContext(Dispatchers.Main) {
+                                                         if (ok) {
+                                                             state = SendState.Complete(
+                                                                 fileCount = urisCopy.size,
+                                                                 totalBytes = totalBytes,
+                                                                 durationSec = durationSec
+                                                             )
+                                                         } else {
+                                                             state = SendState.Error("Transfer interrupted or failed")
+                                                         }
+                                                     }
+                                                 }
+                                             } else {
+                                                 transferJob = scope.launch(Dispatchers.IO) {
+                                                     runTransfer(context, s.connection, urisCopy, transferControl) { newState ->
+                                                         withContext(Dispatchers.Main) { state = newState }
+                                                     }
+                                                 }
+                                             }
                                         },
                                         enabled = selectedUris.isNotEmpty(),
                                         modifier = Modifier.fillMaxWidth(),

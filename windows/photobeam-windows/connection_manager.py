@@ -96,6 +96,7 @@ try:
         find_adb,
         setup_adb_forward,
         setup_adb_reverse,
+        setup_bidirectional_adb_tunnels,
     )
     from .transport.wifi_transport import WiFiTransport
 except (ImportError, ValueError):
@@ -105,6 +106,7 @@ except (ImportError, ValueError):
         find_adb,
         setup_adb_forward,
         setup_adb_reverse,
+        setup_bidirectional_adb_tunnels,
     )
     from wifi_transport import WiFiTransport
 
@@ -114,6 +116,8 @@ try:
         CONTROL_USB_PORT,
         DATA_PORT,
         DATA_USB_PORT,
+        PC_TO_PHONE_CONTROL_FORWARD_PORT,
+        PC_TO_PHONE_DATA_FORWARD_PORT,
         recv_framed_msg,
         send_framed_msg,
     )
@@ -125,6 +129,8 @@ except (ImportError, ValueError):
         CONTROL_USB_PORT,
         DATA_PORT,
         DATA_USB_PORT,
+        PC_TO_PHONE_CONTROL_FORWARD_PORT,
+        PC_TO_PHONE_DATA_FORWARD_PORT,
         recv_framed_msg,
         send_framed_msg,
     )
@@ -475,24 +481,51 @@ class ConnectionManager:
             ]
 
     def _usb_monitor_loop(self) -> None:
-        """Continuously maintain ADB forward/reverse tunnels when a device is attached via USB."""
+        """Continuously maintain bidirectional ADB forward/reverse tunnels when a device is attached via USB."""
         while self._running:
             try:
                 adb = find_adb()
                 if adb:
                     devs = adb_devices(adb)
-                    if any(d.get("state") == "device" for d in devs):
-                        setup_adb_reverse(adb, remote_port=CONTROL_USB_PORT, local_port=CONTROL_PORT)
-                        setup_adb_forward(adb, local_port=CONTROL_USB_PORT, remote_port=CONTROL_PORT)
-                        setup_adb_reverse(adb, remote_port=47475, local_port=47474)
-                        setup_adb_reverse(adb, remote_port=47474, local_port=47474)
-                        setup_adb_forward(adb, local_port=47475, remote_port=47474)
-                        # Mirror stream: Android connects TO Windows 47478 via USB reverse tunnel.
-                        # adb reverse tcp:47478 tcp:47478 routes phone's localhost:47478 -> Windows:47478
-                        setup_adb_reverse(adb, remote_port=47478, local_port=47478)
+                    online = [d for d in devs if d.get("state") == "device"]
+                    for d in online:
+                        serial = d.get("serial")
+                        setup_bidirectional_adb_tunnels(adb, device_serial=serial)
             except Exception:
                 pass
             time.sleep(4.0)
+
+    def is_usb_available(self, device_id: Optional[str] = None) -> bool:
+        """
+        Check if USB connection is actively available:
+        either via an active session with transport_type == 'usb',
+        or an attached ADB device with active forwarding.
+        """
+        with self._session_lock:
+            if device_id:
+                s = self._active_sessions.get(device_id)
+                if s and s.is_healthy() and s.transport_type == "usb":
+                    return True
+            else:
+                for s in self._active_sessions.values():
+                    if s.is_healthy() and s.transport_type == "usb":
+                        return True
+
+        # Check if an ADB device is physically attached and online
+        try:
+            adb = find_adb()
+            if adb:
+                devs = adb_devices(adb)
+                online = [d for d in devs if d.get("state") == "device"]
+                if online:
+                    for d in online:
+                        serial = d.get("serial")
+                        setup_bidirectional_adb_tunnels(adb, device_serial=serial)
+                    return True
+        except Exception as e:
+            logger.debug("Error checking ADB devices: %s", e)
+
+        return False
 
     # ── Persistent Control Server ─────────────────────────────────────────────
 
@@ -972,9 +1005,8 @@ class ConnectionManager:
                 candidates = []
                 adb = find_adb()
                 if adb:
-                    setup_adb_reverse(adb, remote_port=CONTROL_USB_PORT, local_port=CONTROL_PORT)
-                    setup_adb_forward(adb, local_port=CONTROL_USB_PORT, remote_port=CONTROL_PORT)
-                    candidates.append(("127.0.0.1", CONTROL_USB_PORT, "usb"))
+                    setup_bidirectional_adb_tunnels(adb)
+                    candidates.append(("127.0.0.1", PC_TO_PHONE_CONTROL_FORWARD_PORT, "usb"))
 
                 for a in payload.addrs:
                     if not a.startswith("127."):
@@ -1126,11 +1158,10 @@ class ConnectionManager:
 
                 if usb_available:
                     try:
-                        setup_adb_reverse(adb, remote_port=CONTROL_USB_PORT, local_port=CONTROL_PORT)
-                        setup_adb_forward(adb, local_port=CONTROL_USB_PORT, remote_port=CONTROL_PORT)
+                        setup_bidirectional_adb_tunnels(adb)
                         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                         s.settimeout(2.0)
-                        s.connect(("127.0.0.1", CONTROL_USB_PORT))
+                        s.connect(("127.0.0.1", PC_TO_PHONE_CONTROL_FORWARD_PORT))
                         if self._perform_handshake(s, device_id):
                             connected_sock = s
                             transport_type = "usb"

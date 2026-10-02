@@ -66,6 +66,7 @@ class DataSender:
         transfer_id: int = 0,
         progress_cb: Optional[Callable[[int, int, int, float], None]] = None,
         completed_cb: Optional[Callable[[int, str, int, bool, str], None]] = None,
+        stop_event: Optional[threading.Event] = None,
     ) -> bool:
         """
         Synchronously send a file to the peer. Run in a background thread if non-blocking operation is required.
@@ -112,6 +113,8 @@ class DataSender:
 
             with open(path, "rb") as f:
                 while bytes_sent < file_size:
+                    if stop_event and stop_event.is_set():
+                        raise InterruptedError("Transfer cancelled by user")
                     to_read = min(CHUNK_BUFFER_SIZE, file_size - bytes_sent)
                     chunk = f.read(to_read)
                     if not chunk:

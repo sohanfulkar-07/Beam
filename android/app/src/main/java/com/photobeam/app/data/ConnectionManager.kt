@@ -78,9 +78,16 @@ class ConnectionManager private constructor(private val appContext: Context) {
         val endpoints = mutableListOf<Pair<String, Int>>()
         val isUsb = hasActiveUsbSession() || (deviceId != null && activeSessions[deviceId]?.transportType == "usb")
         if (isUsb) {
-            endpoints.add(Pair("127.0.0.1", ProtocolV2.DATA_USB_PORT)) // 47475
-            endpoints.add(Pair("127.0.0.1", ProtocolV2.DATA_PORT))     // 47474
+            endpoints.add(Pair("127.0.0.1", ProtocolV2.DATA_USB_PORT)) // 47475 (USB reverse tunnel to PC receiver 47474)
         }
+
+        // Add remote socket IP from active session (vital for Mobile Hotspot gateway / Wi-Fi direct routing)
+        val activeSess = if (deviceId != null) activeSessions[deviceId] else activeSessions.values.firstOrNull { it.isHealthy() }
+        val sessionIp = activeSess?.socket?.inetAddress?.hostAddress
+        if (!sessionIp.isNullOrBlank() && !sessionIp.startsWith("127.") && !sessionIp.startsWith("169.254.")) {
+            endpoints.add(Pair(sessionIp, ProtocolV2.DATA_PORT))
+        }
+
         val dev = if (deviceId != null) {
             pairingManager.getPairedDevice(deviceId)
         } else {

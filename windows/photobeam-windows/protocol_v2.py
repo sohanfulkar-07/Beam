@@ -16,6 +16,10 @@ CONTROL_USB_PORT: int = 47471
 DATA_PORT: int = 47474
 DATA_USB_PORT: int = 47475
 
+# PC -> Phone Forwarding Ports (Windows localhost -> Android listener)
+PC_TO_PHONE_CONTROL_FORWARD_PORT: int = 47480
+PC_TO_PHONE_DATA_FORWARD_PORT: int = 47484
+
 CHUNK_BUFFER_SIZE: int = 4 * 1024 * 1024  # 4 MB streaming buffer
 
 

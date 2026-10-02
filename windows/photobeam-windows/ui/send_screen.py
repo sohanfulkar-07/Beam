@@ -66,6 +66,18 @@ try:
 except ImportError:
     from .error_formatter import format_friendly_error
 
+try:
+    from data_sender import DataSender
+    from protocol_v2 import PC_TO_PHONE_DATA_FORWARD_PORT, DATA_PORT
+except (ImportError, ValueError):
+    try:
+        from ..data_sender import DataSender
+        from ..protocol_v2 import PC_TO_PHONE_DATA_FORWARD_PORT, DATA_PORT
+    except (ImportError, ValueError):
+        DataSender = None
+        PC_TO_PHONE_DATA_FORWARD_PORT = 47484
+        DATA_PORT = 47474
+
 
 
 def format_bytes(b: int) -> str:
@@ -152,15 +164,25 @@ class SenderWorker(QObject):
     state_verified = pyqtSignal()
     unsafe_to_resume = pyqtSignal(str)
 
-    def __init__(self, uri: str, files: List[Path]):
+    def __init__(
+        self,
+        uri: Optional[str],
+        files: List[Path],
+        is_usb: bool = True,
+        peer_ip: str = "127.0.0.1",
+        peer_port: int = PC_TO_PHONE_DATA_FORWARD_PORT,
+    ):
         super().__init__()
         self._uri = uri
         self._files = files
+        self._is_usb = is_usb
+        self._peer_ip = peer_ip
+        self._peer_port = peer_port
         self._stop = threading.Event()
         self._pause_requested = threading.Event()
         self._continue_requested = threading.Event()
         self._restart_requested = threading.Event()
-        self._transport_type = "Wi-Fi"
+        self._transport_type = "USB" if is_usb else "Wi-Fi"
         self._xfer: Optional[TransferManager] = None
 
     def request_pause(self):
@@ -197,7 +219,67 @@ class SenderWorker(QObject):
                     error_reason=err_msg,
                 ))
 
+    def _run_usb_stream(self, start_time: float):
+        total_files = len(self._files)
+        total_bytes = sum(p.stat().st_size for p in self._files if p.exists())
+        self.connected.emit("Android Phone (USB)", "USB Tunnel (Port 47484)")
+        self.status.emit("Streaming over USB tunnel (127.0.0.1:47484)…")
+
+        sender = DataSender() if DataSender else None
+        if not sender:
+            raise RuntimeError("DataSender module not available")
+
+        overall_sent = 0
+
+        for idx, file_path in enumerate(self._files, start=1):
+            if self._stop.is_set():
+                break
+
+            file_size = file_path.stat().st_size
+
+            def _on_prog(tid, sent, total, spd):
+                cur_overall = overall_sent + sent
+                self.progress_update.emit(
+                    file_path.name, idx, total_files, sent, file_size, cur_overall, total_bytes
+                )
+
+            transfer_id = int(time.time() * 1000) & 0x7FFFFFFFFFFFFFFF
+            ok = sender.send_file(
+                peer_ip=self._peer_ip,
+                peer_port=self._peer_port,
+                file_path=file_path,
+                transfer_id=transfer_id,
+                progress_cb=_on_prog,
+                stop_event=self._stop,
+            )
+            if not ok:
+                if self._stop.is_set():
+                    return
+                raise ConnectionError(f"Failed to stream {file_path.name} to Android over port {self._peer_port}")
+
+            overall_sent += file_size
+            self.file_done.emit(file_path.name, True)
+
+        dur = max(time.time() - start_time, 0.001)
+        self.transfer_complete.emit(total_files, total_bytes, dur)
+        HistoryManager.get_instance().add_record(TransferRecord(
+            direction="sent",
+            files=[p.name for p in self._files],
+            total_bytes=total_bytes,
+            duration_sec=dur,
+            status="completed",
+            transport_type="USB",
+        ))
+
     def _run(self, start_time: float):
+        if self._is_usb:
+            self._run_usb_stream(start_time)
+            return
+
+        if not self._uri:
+            self.error.emit("No receiver address or QR code provided", "no_address")
+            return
+
         try:
             payload = decode_qr_payload(self._uri)
         except ValueError as e:
@@ -992,6 +1074,7 @@ class SendScreen(QWidget):
             self._conn_badge.setStyleSheet("color: #4ade80; font-weight: 600;")
             if hasattr(self, "_device_instruction_label"):
                 self._device_instruction_label.setText("Receiver is ready. Choose your files and tap 'Send Files'.")
+            self._update_send_btn()
             return
 
         if not self.connection_manager:
@@ -999,6 +1082,7 @@ class SendScreen(QWidget):
             self._conn_badge.setStyleSheet("color: #94a3b8; font-weight: 500;")
             if hasattr(self, "_device_instruction_label"):
                 self._device_instruction_label.setText("Select files and paste a receiver's photobeam://connect/... link below.")
+            self._update_send_btn()
             return
 
         pm = getattr(self.connection_manager, "pairing_manager", None)
@@ -1042,6 +1126,8 @@ class SendScreen(QWidget):
             if hasattr(self, "_device_instruction_label"):
                 self._device_instruction_label.setText("Select files and scan or paste a receiver's photobeam://connect/... link below.")
 
+        self._update_send_btn()
+
     def set_target_device(self, device_id: str):
         """Set the target device to send to and refresh status."""
         self._target_device_id = device_id
@@ -1063,22 +1149,46 @@ class SendScreen(QWidget):
         t = text.strip()
         if t.startswith("photobeam://connect/"):
             self._uri = t
-            self._conn_badge.setText("● Ready to connect (Receiver Link Verified)")
-            self._conn_badge.setStyleSheet("color: #4ade80; font-weight: 600;")
-            if hasattr(self, "_device_instruction_label"):
-                self._device_instruction_label.setText("Receiver link verified. Select files and tap 'Send Files'.")
+            self.refresh_connection_status()
         else:
             self._uri = None
             self.refresh_connection_status()
         self._update_send_btn()
 
     def _update_send_btn(self):
-        self._send_btn.setEnabled(bool(self._files and self._uri))
+        usb_ok = False
+        if self.connection_manager and hasattr(self.connection_manager, "is_usb_available"):
+            usb_ok = self.connection_manager.is_usb_available(self._target_device_id)
+        else:
+            try:
+                usb_ok, _ = UsbTransport.is_available()
+            except Exception:
+                usb_ok = False
+        # Button enabled when files are selected and either USB is ready or a URI link is provided
+        self._send_btn.setEnabled(bool(self._files and (self._uri or usb_ok)))
 
     # ── Transfer Execution ────────────────────────────────────────────────────
 
     def _start_send(self):
-        if not self._files or not self._uri:
+        if not self._files:
+            return
+
+        # 1. Enforce USB Policy: Sending from PC strictly requires USB tunnel
+        usb_ok = False
+        if self.connection_manager and hasattr(self.connection_manager, "is_usb_available"):
+            usb_ok = self.connection_manager.is_usb_available(self._target_device_id)
+        else:
+            try:
+                usb_ok, _ = UsbTransport.is_available()
+            except Exception:
+                usb_ok = False
+
+        if not usb_ok:
+            QMessageBox.warning(
+                self,
+                "USB Connection Required",
+                "Cannot send file: USB connection is not available. Please connect your phone via USB.",
+            )
             return
 
         self._selection_container.setVisible(False)
@@ -1086,11 +1196,19 @@ class SendScreen(QWidget):
         self._error_container.setVisible(False)
         self._progress_container.setVisible(True)
 
-        self._conn_badge.setText("○ Connecting…")
-        self._conn_badge.setStyleSheet("color: #60a5fa; font-weight: 600;")
+        self._conn_badge.setText("● Connected (USB Tunnel)")
+        self._conn_badge.setStyleSheet("color: #4ade80; font-weight: 600;")
+        self._transport_pill.setText("⚡ USB Tunnel (Port 47484)")
+        self._transport_pill.setStyleSheet("color: #a78bfa; background-color: rgba(167, 139, 250, 0.15); border: 1px solid rgba(167, 139, 250, 0.3);")
         self._speed_tracker = SpeedTracker(alpha=0.25)
 
-        self._worker = SenderWorker(self._uri, self._files)
+        self._worker = SenderWorker(
+            self._uri,
+            self._files,
+            is_usb=True,
+            peer_ip="127.0.0.1",
+            peer_port=PC_TO_PHONE_DATA_FORWARD_PORT,
+        )
         self._thread = QThread()
         self._worker.moveToThread(self._thread)
 

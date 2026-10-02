@@ -15,6 +15,10 @@ object ProtocolV2 {
     const val DATA_PORT: Int = 47474
     const val DATA_USB_PORT: Int = 47475
 
+    // PC -> Phone Forwarding Ports (Windows localhost -> Android listener)
+    const val PC_TO_PHONE_CONTROL_FORWARD_PORT: Int = 47480
+    const val PC_TO_PHONE_DATA_FORWARD_PORT: Int = 47484
+
     const val CHUNK_BUFFER_SIZE: Int = 4 * 1024 * 1024 // 4 MB
 
     fun readExact(inputStream: InputStream, n: Int): ByteArray? {

@@ -35,7 +35,16 @@ ADB_SEARCH_PATHS = [
     r"C:\Android\platform-tools\adb.exe",
 ]
 
-USB_TUNNEL_PORT = 47475  # ADB reverse forwards this port
+CONTROL_PORT = 47470
+CONTROL_USB_PORT = 47471
+DATA_PORT = 47474
+DATA_USB_PORT = 47475
+MIRROR_PORT = 47478
+
+PC_TO_PHONE_CONTROL_FORWARD_PORT = 47480
+PC_TO_PHONE_DATA_FORWARD_PORT = 47484
+
+USB_TUNNEL_PORT = DATA_USB_PORT  # 47475 (Android -> PC reverse data)
 
 
 def find_adb() -> Optional[str]:
@@ -130,6 +139,28 @@ def teardown_adb_reverse(adb: str, remote_port: int = USB_TUNNEL_PORT, device_se
         pass
 
 
+def setup_bidirectional_adb_tunnels(adb: str, device_serial: Optional[str] = None) -> bool:
+    """
+    Configure both directions upon detecting a connected device via ADB:
+    # Phone -> PC (Reverse)
+    adb -s <device_id> reverse tcp:47471 tcp:47470   # Control channel
+    adb -s <device_id> reverse tcp:47475 tcp:47474   # Data receiver on PC
+    adb -s <device_id> reverse tcp:47478 tcp:47478   # Screen mirror
+
+    # PC -> Phone (Forward)
+    adb -s <device_id> forward tcp:47480 tcp:47470   # Control listener on Phone
+    adb -s <device_id> forward tcp:47484 tcp:47474   # Data receiver on Phone
+    """
+    ok_rev_ctrl = setup_adb_reverse(adb, remote_port=CONTROL_USB_PORT, local_port=CONTROL_PORT, device_serial=device_serial)
+    ok_rev_data = setup_adb_reverse(adb, remote_port=DATA_USB_PORT, local_port=DATA_PORT, device_serial=device_serial)
+    setup_adb_reverse(adb, remote_port=MIRROR_PORT, local_port=MIRROR_PORT, device_serial=device_serial)
+
+    ok_fwd_ctrl = setup_adb_forward(adb, local_port=PC_TO_PHONE_CONTROL_FORWARD_PORT, remote_port=CONTROL_PORT, device_serial=device_serial)
+    ok_fwd_data = setup_adb_forward(adb, local_port=PC_TO_PHONE_DATA_FORWARD_PORT, remote_port=DATA_PORT, device_serial=device_serial)
+
+    return all([ok_rev_ctrl, ok_rev_data, ok_fwd_ctrl, ok_fwd_data])
+
+
 class UsbTransport(Transport):
     """
     USB transport implemented via ADB tunnel (forward or reverse).
@@ -165,8 +196,8 @@ class UsbTransport(Transport):
             return False, "No Android devices connected via USB."
         return True, ""
 
-    def connect(self, host: str = "127.0.0.1", port: int = USB_TUNNEL_PORT,
-                timeout: float = 10.0, target_port: int = 47474, **kwargs) -> None:
+    def connect(self, host: str = "127.0.0.1", port: int = PC_TO_PHONE_DATA_FORWARD_PORT,
+                timeout: float = 10.0, target_port: int = DATA_PORT, **kwargs) -> None:
         """
         Set up ADB forward tunnel to receiver's port, then connect TCP to localhost tunnel.
         Forward: PC localhost:port -> Android localhost:target_port.

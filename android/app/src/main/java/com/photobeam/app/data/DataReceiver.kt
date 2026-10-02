@@ -38,10 +38,13 @@ class DataReceiver(
         if (isRunning) return
         isRunning = true
 
-        val downloadDir = File(
+        var downloadDir = File(
             Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
             "PhotoBeam"
-        ).apply { mkdirs() }
+        )
+        if (!downloadDir.exists() && !downloadDir.mkdirs()) {
+            downloadDir = File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: context.filesDir, "PhotoBeam").apply { mkdirs() }
+        }
 
         listenJob = scope.launch {
             try {
